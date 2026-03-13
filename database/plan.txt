@@ -1,0 +1,1 @@
+This is database portion, all database related things are stated here, managed by Brinto
