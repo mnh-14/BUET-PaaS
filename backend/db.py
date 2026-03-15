@@ -44,8 +44,14 @@ def deployments_col() -> Collection:
 def polling_col() -> Collection:
     return get_db()["project_polling"]
 
+def users_col() -> Collection:
+    return get_db()["users"]
+
 
 def init_indexes():
+    users_col().create_index("user_id", unique=True)
+    users_col().create_index("email",   unique=True)
+
     projects_col().create_index("project_id", unique=True)
     projects_col().create_index("user_id")
     projects_col().create_index([("created_at", DESCENDING)])
