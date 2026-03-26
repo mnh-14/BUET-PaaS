@@ -14,7 +14,6 @@ import time
 import uuid
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +24,7 @@ from db import (
     users_col,
     projects_col,
     deployments_col,
+    tunnels_col,
     init_indexes,
     ping
 )
@@ -38,28 +38,24 @@ def safe_rmtree(path: str):
     if os.path.exists(path):
         shutil.rmtree(path, onexc=_force_remove_readonly)
 
-
-
 PORT_START      = 9000
 PORT_END        = 9999
 PACK_BUILDER    = "paketobuildpacks/builder-jammy-base"
 DEFAULT_CONTAINER_PORT = 3000  
+CLOUDFLARED_PATH = "C:\\Users\\sudip\\Downloads\\cloudflared-windows-amd64.exe"   #set this to enable public URLs
 
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 
-# Lock that serialises port allocation + deployment record insertion.
-# Prevents two simultaneous deploys from grabbing the same port.
-# Per-project locks — ensures only ONE build runs per project at a time.
-# Without this, concurrent deploys for the same project race to
-# docker stop/rm/run the same container name and conflict.
+
 _port_lock = threading.Lock()
 _project_locks: dict[str, threading.Lock] = {}
 _project_locks_mutex = threading.Lock()
 
 
 def get_project_lock(project_id: str) -> threading.Lock:
+    """Returns a dedicated lock for a given project_id, creating it if needed."""
     with _project_locks_mutex:
         if project_id not in _project_locks:
             _project_locks[project_id] = threading.Lock()
@@ -86,11 +82,76 @@ def pack_available() -> bool:
     return shutil.which("pack") is not None
 
 
+def get_or_create_tunnel(port: int, project_id: str) -> str:
+    """
+    Returns a public Cloudflare tunnel URL for the given host port.
+    Logic:
+      1. Check tunnels collection — if a tunnel already exists for this
+         port, reuse its URL (no need to open a new one)
+      2. If not, call cloudflared to open a new tunnel, store URL in DB
+      3. If CLOUDFLARED_PATH is not set, fall back to localhost URL
+    """
+    if not CLOUDFLARED_PATH:
+        return f"http://localhost:{port}"
+
+    # Check if tunnel already exists for this port
+    existing = tunnels_col().find_one({"port": port})
+    if existing:
+        print(f"  [TUNNEL] Reusing existing tunnel for port {port}: {existing['tunnel_url']}")
+        return existing["tunnel_url"]
+
+    # Open a new tunnel by importing and calling tunnel.py's start_tunnel
+    try:
+        import importlib.util, sys as _sys
+        tunnel_path = os.path.join(os.path.dirname(__file__), "tunnel.py")
+        spec = importlib.util.spec_from_file_location("tunnel", tunnel_path)
+        tunnel_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tunnel_mod)
+        tunnel_mod.CLOUDFLARED_EXECUTABLE = CLOUDFLARED_PATH
+
+        tunnel_url = tunnel_mod.start_tunnel(f"localhost:{port}")
+
+        if tunnel_url:
+            tunnels_col().insert_one({
+                "port":       port,
+                "tunnel_url": tunnel_url,
+                "project_id": project_id,
+                "created_at": datetime.now(timezone.utc)
+            })
+            print(f"  [TUNNEL] New tunnel for port {port}: {tunnel_url}")
+            return tunnel_url
+        else:
+            print(f"  [TUNNEL] Failed to create tunnel — falling back to localhost")
+            return f"http://localhost:{port}"
+
+    except Exception as e:
+        print(f"  [TUNNEL] Error creating tunnel: {e} — falling back to localhost")
+        return f"http://localhost:{port}"
+
+
+def stop_all_tunnels():
+    """
+    Stops all running cloudflared tunnels and clears the tunnels collection.
+    Called when a project is deleted or all projects are stopped.
+    """
+    if not CLOUDFLARED_PATH:
+        return
+
+    try:
+        import importlib.util
+        tunnel_path = os.path.join(os.path.dirname(__file__), "tunnel.py")
+        spec = importlib.util.spec_from_file_location("tunnel", tunnel_path)
+        tunnel_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tunnel_mod)
+        tunnel_mod.CLOUDFLARED_EXECUTABLE = CLOUDFLARED_PATH
+        tunnel_mod.stop_tunnels()
+        tunnels_col().delete_many({})
+        print("  [TUNNEL] All tunnels stopped and collection cleared.")
+    except Exception as e:
+        print(f"  [TUNNEL] Error stopping tunnels: {e}")
+
+
 def parse_expose_port(dockerfile_dir: str) -> int:
-    """
-    Reads the Dockerfile in dockerfile_dir and extracts the first EXPOSE port.
-    Works for any Dockerfile regardless of what port the app uses.
-    """
     dockerfile_path = os.path.join(dockerfile_dir, "Dockerfile")
     try:
         with open(dockerfile_path, "r") as f:
@@ -100,7 +161,7 @@ def parse_expose_port(dockerfile_dir: str) -> int:
                     # handles "EXPOSE 8000" and "EXPOSE 8000/tcp"
                     parts = line.split()
                     if len(parts) >= 2:
-                        port_str = parts[1].split("/")[0] 
+                        port_str = parts[1].split("/")[0]  # strip /tcp or /udp
                         port = int(port_str)
                         print(f"  [BUILD] Detected EXPOSE port: {port}")
                         return port
@@ -115,8 +176,6 @@ def find_dockerfile(work_dir: str) -> str | None:
     """
     Searches the entire cloned repo for a Dockerfile — not just the root.
     Returns the DIRECTORY containing the Dockerfile so docker build
-    can be pointed at it directly.
-    Returns the folder path containing the Dockerfile, or None if not found.
     """
     # 1. Check root first
     if os.path.exists(os.path.join(work_dir, "Dockerfile")):
@@ -133,17 +192,16 @@ def find_dockerfile(work_dir: str) -> str | None:
 
     # 3. Full recursive walk — finds it anywhere
     for root, dirs, files in os.walk(work_dir):
-        # skip hidden folders like .git — they will never have a Dockerfile
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         if "Dockerfile" in files:
             rel = os.path.relpath(root, work_dir)
             print(f"  [BUILD] Dockerfile found in {rel}/")
             return root
 
-    return None  # no Dockerfile 
+    return None  
 
 
-def build_and_deploy(deployment_id: str, project_id: str, repo_url: str, port: int):
+def build_and_deploy(deployment_id: str, project_id: str, repo_url: str, port: int, env_vars: dict = None):
     work_dir  = f"/tmp/buetpaas_{deployment_id}"
     image_tag = f"buetpaas/{project_id}:latest"
 
@@ -208,29 +266,36 @@ def build_and_deploy(deployment_id: str, project_id: str, repo_url: str, port: i
                     "The Dockerfile must have an EXPOSE instruction (e.g. EXPOSE 8000)."
                 )
 
-       
+        # ── 3. Detect container port from Dockerfile ────────────
         dockerfile_dir = find_dockerfile(work_dir)
         container_port = parse_expose_port(dockerfile_dir) if dockerfile_dir else DEFAULT_CONTAINER_PORT
-
-        # Stop any existing container for this project.
         subprocess.run(["docker", "stop", project_id], capture_output=True)
         subprocess.run(["docker", "rm",   project_id], capture_output=True)
-        time.sleep(1)   #time to release the port binding
+        time.sleep(1)   # give OS time to release the port binding
 
-        
+        # ── 5. Run ──────────────────────────────────────────────
         set_status("starting")
+        # Build docker run command — inject env vars if provided
+        docker_cmd = [
+            "docker", "run", "-d",
+            "--name", project_id,
+            "-p", f"{port}:{container_port}",
+            "--restart", "unless-stopped",
+        ]
+        if env_vars:
+            for key, value in env_vars.items():
+                docker_cmd += ["-e", f"{key}={value}"]
+        docker_cmd.append(image_tag)
+
         r = subprocess.run(
-            ["docker", "run", "-d",
-             "--name", project_id,
-             "-p", f"{port}:{container_port}",
-             "--restart", "unless-stopped",
-             image_tag],
+            docker_cmd,
             capture_output=True, text=True, timeout=30
         )
         if r.returncode != 0:
             raise RuntimeError(f"docker run failed:\n\n{r.stderr.strip()}")
 
-        url = f"http://localhost:{port}"
+       
+        url = get_or_create_tunnel(port, project_id)
         set_status("running", url=url)
         print(f"  [{deployment_id[:8]}] ✓ Running at {url}")
 
@@ -262,26 +327,17 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/", include_in_schema=False)
 def root():
     return FileResponse("static/index.html")
 
-
 class UserCreate(BaseModel):
-    user_id:  str      
-    name:     str       
-    email:    str       
-    password: str      
+    user_id:  str       # student roll
+    name:     str       # full name
+    email:    str       # institutional email
+    password: str       # plain text hash
 
 class UserLogin(BaseModel):
     user_id:  str
@@ -291,14 +347,16 @@ class ProjectCreate(BaseModel):
     repo_url:     str
     user_id:      str
     project_name: str = "my-project"
-
+    env_vars:     dict[str, str] = {}
 class ProjectResponse(BaseModel):
     project_id:    str
     deployment_id: str
     message:       str
 
 
-
+# ──────────────────────────────────────────────────────────────────
+# User endpoints
+# ──────────────────────────────────────────────────────────────────
 
 @app.post("/api/v1/users", status_code=201)
 def create_user(body: UserCreate):
@@ -371,9 +429,13 @@ def login(body: UserLogin):
 
 @app.get("/api/v1/users/{user_id}")
 def get_user(user_id: str):
+    """
+    Get a student's profile.
+    Never returns password_hash.
+    """
     user = users_col().find_one(
         {"user_id": user_id},
-        {"_id": 0, "password_hash": 0}  
+        {"_id": 0, "password_hash": 0}   # exclude sensitive fields
     )
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
@@ -382,6 +444,10 @@ def get_user(user_id: str):
 
 @app.get("/api/v1/users/{user_id}/projects")
 def get_user_projects(user_id: str):
+    """
+    Get all projects belonging to a specific student.
+    Useful for the dashboard — "show only my projects".
+    """
     if not users_col().find_one({"user_id": user_id}):
         raise HTTPException(status_code=404, detail="User not found.")
 
@@ -450,6 +516,7 @@ def create_project(body: ProjectCreate, bg: BackgroundTasks):
         "user_id":        body.user_id,
         "project_name":   body.project_name,
         "repo_url":       body.repo_url,
+        "env_vars":       body.env_vars,
         "current_status": "queued",
         "created_at":     now
     })
@@ -466,8 +533,9 @@ def create_project(body: ProjectCreate, bg: BackgroundTasks):
             "deployed_at":   now,
             "updated_at":    now
         })
-  
-    bg.add_task(build_and_deploy, deployment_id, project_id, body.repo_url, port)
+    # lock released here — port is now safely recorded in DB
+
+    bg.add_task(build_and_deploy, deployment_id, project_id, body.repo_url, port, body.env_vars)
 
     return {
         "project_id":    project_id,
@@ -520,7 +588,6 @@ def list_projects():
 
 @app.get("/api/v1/projects/{project_id}")
 def get_project(project_id: str):
-    """Returns a single project with its full deployment history."""
     project = projects_col().find_one(
         {"project_id": project_id},
         {"_id": 0}
@@ -552,10 +619,17 @@ def delete_project(project_id: str):
         {"project_id": project_id},
         {"$set": {"current_status": "stopped"}}
     )
+    tunnels_col().delete_many({"project_id": project_id})
     return {
         "message":       f"Project {project_id} stopped.",
         "docker_output": result.stdout
     }
+
+
+@app.delete("/api/v1/tunnels")
+def stop_tunnels_endpoint():
+    stop_all_tunnels()
+    return {"message": "All tunnels stopped and tunnel records cleared."}
 
 
 @app.get("/api/v1/deployments/{deployment_id}")
@@ -597,14 +671,43 @@ def redeploy_project(project_id: str, bg: BackgroundTasks):
         "updated_at":    now
     })
 
+    env_vars = project.get("env_vars", {})
     bg.add_task(
         build_and_deploy,
-        deployment_id, project_id, project["repo_url"], port
+        deployment_id, project_id, project["repo_url"], port, env_vars
     )
     return {
         "deployment_id": deployment_id,
         "message":       "Redeployment triggered."
     }
+
+class EnvVarsUpdate(BaseModel):
+    env_vars: dict[str, str]
+
+@app.put("/api/v1/projects/{project_id}/env")
+def update_env_vars(project_id: str, body: EnvVarsUpdate):
+    project = projects_col().find_one({"project_id": project_id})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    projects_col().update_one(
+        {"project_id": project_id},
+        {"$set": {"env_vars": body.env_vars}}
+    )
+    return {
+        "message":  "Env vars updated. They will apply on the next deployment.",
+        "env_vars": body.env_vars
+    }
+
+
+@app.get("/api/v1/projects/{project_id}/env")
+def get_env_vars(project_id: str):
+    """Get current env vars for a project (for the frontend to display)."""
+    project = projects_col().find_one({"project_id": project_id}, {"_id": 0})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return {"env_vars": project.get("env_vars", {})}
+
 
 @app.get("/health")
 def health():

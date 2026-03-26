@@ -47,6 +47,19 @@ def polling_col() -> Collection:
 def users_col() -> Collection:
     return get_db()["users"]
 
+def tunnels_col() -> Collection:
+    """
+    Maps host port → Cloudflare tunnel public URL.
+    Document structure:
+    {
+        "port":        9003,
+        "tunnel_url":  "https://xxxx.trycloudflare.com",
+        "project_id":  "proj-a1b2c3d4",
+        "created_at":  ISODate(...)
+    }
+    """
+    return get_db()["tunnels"]
+
 
 def init_indexes():
     users_col().create_index("user_id", unique=True)
@@ -63,6 +76,9 @@ def init_indexes():
                                     ("deployed_at", DESCENDING)])     
 
     polling_col().create_index("project_id", unique=True)
+
+    tunnels_col().create_index("port", unique=True)
+    tunnels_col().create_index("project_id")
 
     print("MongoDB indexes initialized.")
 
