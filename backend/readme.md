@@ -109,6 +109,11 @@ python poller.py
 
 The `tunnel.py` script can be used directly to manage Cloudflare quick tunnels.
 
+Important behavior:
+
+- Tunnels opened manually with `python tunnel.py ...` are not tracked or lifecycle-managed by backend project deployment state.
+- `python tunnel.py --stop` stops all local cloudflared processes, including tunnels currently used by backend-managed deployments. Use this command carefully.
+
 Examples:
 
 ```bash
@@ -168,11 +173,53 @@ Below are the primary API endpoints implemented in `main.py`. Replace `:8000` wi
 
 - **GET /api/v1/projects/{project_id}**: Get project with deployment history.
 - **DELETE /api/v1/projects/{project_id}**: Stop/remove running container and mark project stopped.
+- **PUT /api/v1/projects/{project_id}/env**: Update project environment variables (applies on next deployment). Body:
+
+```json
+{ "env_vars": { "KEY": "VALUE", "ANOTHER_KEY": "ANOTHER_VALUE" } }
+```
+
+- **GET /api/v1/projects/{project_id}/env**: Get currently stored environment variables for a project.
 
 - **GET /api/v1/deployments/{deployment_id}**: Poll deployment status (queued → building → running/failed).
 - **POST /api/v1/deployments/redeploy/{project_id}**: Trigger a redeploy for a project (queues a new build).
 
+- **DELETE /api/v1/tunnels**: Stop all running cloudflared tunnels and clear tunnel records from MongoDB.
+
+Use with caution: this endpoint also stops tunnels that may currently be serving backend deployments.
+
 Use the `check_backend.py` script to exercise these endpoints automatically (it can seed a test user/project with `--seed`).
+
+## Poller (poller.py)
+
+`poller.py` monitors GitHub for new commits on active projects and triggers redeploys automatically.
+
+When to run:
+
+- Run it after `main.py` is already running on `http://localhost:8000`.
+- Keep it running while you want automatic redeploy-on-commit behavior.
+
+How to run:
+
+**Linux / macOS:**
+```bash
+cd backend/
+source venv/bin/activate
+python poller.py
+```
+
+**Windows:**
+```bat
+cd backend\
+venv\Scripts\activate
+python poller.py
+```
+
+Operational notes:
+
+- Default polling interval is 30 seconds.
+- Default branch checked is `main`.
+- Set `GITHUB_PAT` in `.env` to reduce GitHub API rate-limit issues.
 
 ## Health-check script
 
@@ -200,6 +247,6 @@ GITHUB_PAT=<Your github personal access token>
 
 Notes:
 
-- `MONGO_URI` and `MONGO_DB` are used by `db.py`. You can skip these if you used the docker frontend and database setup
+- `MONGO_URI` and `MONGO_DB` are used by `db.py`. If you run MongoDB through your Docker setup, these can usually be omitted to use defaults.
 - `CLOUDFLARED_EXECUTABLE` is used by `tunnel.py` and tunnel integration inside `main.py`.
-
+- `GITHUB_PAT` is used by `poller.py` to authenticate GitHub API calls and increase API limits.
