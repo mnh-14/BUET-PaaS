@@ -1,9 +1,11 @@
 @echo off
 cd /d "%~dp0"
 
+set "DOCKER_NETWORK=BUET-PaaS-network-v1.0"
+
 
 REM ── Check Python ─────────────────────────────────────────────────
-echo [1/5] Checking Python...
+echo [1/6] Checking Python...
 python --version >nul 2>&1
 IF ERRORLEVEL 1 (
     echo   ERROR: Python not found.
@@ -32,7 +34,7 @@ IF %PY_MAJOR% EQU 3 IF %PY_MINOR% LSS 11 (
 echo   OK: Python %PY_VER%
 
 REM ── Check Docker ─────────────────────────────────────────────────
-echo [2/5] Checking Docker...
+echo [2/6] Checking Docker...
 docker --version >nul 2>&1
 IF ERRORLEVEL 1 (
     echo   ERROR: Docker not found.
@@ -43,8 +45,25 @@ IF ERRORLEVEL 1 (
 )
 echo   OK: Docker found
 
+REM ── Ensure required Docker network exists ────────────────────────
+echo [3/6] Checking Docker network: %DOCKER_NETWORK%...
+docker network inspect "%DOCKER_NETWORK%" >nul 2>&1
+IF ERRORLEVEL 1 (
+    echo   INFO: Docker network not found. Creating %DOCKER_NETWORK%...
+    docker network create "%DOCKER_NETWORK%" >nul 2>&1
+    IF ERRORLEVEL 1 (
+        echo   ERROR: Failed to create Docker network %DOCKER_NETWORK%.
+        echo   Ensure Docker Desktop is running and try again.
+        pause
+        exit /b 1
+    )
+    echo   OK: Docker network created
+) ELSE (
+    echo   OK: Docker network exists
+)
+
 REM ── Check Git ────────────────────────────────────────────────────
-echo [3/5] Checking Git...
+echo [4/6] Checking Git...
 git --version >nul 2>&1
 IF ERRORLEVEL 1 (
     echo   ERROR: Git not found.
@@ -55,7 +74,7 @@ IF ERRORLEVEL 1 (
 echo   OK: Git found
 
 REM ── Create virtual environment ───────────────────────────────────
-echo [4/5] Setting up virtual environment...
+echo [5/6] Setting up virtual environment...
 IF EXIST "venv\" (
     echo   INFO: venv already exists, skipping creation
 ) ELSE (
@@ -64,7 +83,7 @@ IF EXIST "venv\" (
 )
 
 REM ── Install dependencies ─────────────────────────────────────────
-echo [5/5] Installing Python dependencies...
+echo [6/6] Installing Python dependencies...
 call venv\Scripts\activate.bat
 python -m pip install --upgrade pip --quiet
 pip install -r requirements.txt --quiet

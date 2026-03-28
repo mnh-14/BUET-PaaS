@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
+DOCKER_NETWORK="BUET-PaaS-network-v1.0"
+
 # Always run from inside backend/ regardless of where the script is called from
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -32,6 +34,16 @@ if ! docker info &>/dev/null; then
     exit 1
 fi
 echo "   Docker OK ($(docker --version | awk '{print $3}' | tr -d ','))"
+
+# ── Ensure required Docker network exists ───────────────────────
+echo "▶ Checking Docker network: ${DOCKER_NETWORK}..."
+if docker network inspect "${DOCKER_NETWORK}" >/dev/null 2>&1; then
+    echo "   Docker network exists: ${DOCKER_NETWORK}"
+else
+    echo "   Docker network not found. Creating: ${DOCKER_NETWORK}"
+    docker network create "${DOCKER_NETWORK}" >/dev/null
+    echo "   Docker network created: ${DOCKER_NETWORK}"
+fi
 
 # ── Check Git ────────────────────────────────────────────────────
 echo "▶ Checking Git..."
