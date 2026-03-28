@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+import tunnel
 from db import (
     users_col,
     projects_col,
@@ -42,7 +43,8 @@ PORT_START      = 9000
 PORT_END        = 9999
 PACK_BUILDER    = "paketobuildpacks/builder-jammy-base"
 DEFAULT_CONTAINER_PORT = 3000  
-CLOUDFLARED_PATH = "C:\\Users\\sudip\\Downloads\\cloudflared-windows-amd64.exe"   #set this to enable public URLs
+# tunnel.CLOUDFLARED_EXECUTABLE= "paketobuildpacks/builder-jammy-base"
+DOCKER_NETWORK = "BUET-PaaS-network-v1.0" # ensure this Docker network exists 
 
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
@@ -91,7 +93,7 @@ def get_or_create_tunnel(port: int, project_id: str) -> str:
       2. If not, call cloudflared to open a new tunnel, store URL in DB
       3. If CLOUDFLARED_PATH is not set, fall back to localhost URL
     """
-    if not CLOUDFLARED_PATH:
+    if not tunnel.CLOUDFLARED_EXECUTABLE:
         return f"http://localhost:{port}"
 
     # Check if tunnel already exists for this port
@@ -102,14 +104,15 @@ def get_or_create_tunnel(port: int, project_id: str) -> str:
 
     # Open a new tunnel by importing and calling tunnel.py's start_tunnel
     try:
-        import importlib.util, sys as _sys
-        tunnel_path = os.path.join(os.path.dirname(__file__), "tunnel.py")
-        spec = importlib.util.spec_from_file_location("tunnel", tunnel_path)
-        tunnel_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(tunnel_mod)
-        tunnel_mod.CLOUDFLARED_EXECUTABLE = CLOUDFLARED_PATH
+        # import importlib.util, sys as _sys
+        # tunnel_path = os.path.join(os.path.dirname(__file__), "tunnel.py")
+        # spec = importlib.util.spec_from_file_location("tunnel", tunnel_path)
+        # tunnel_mod = importlib.util.module_from_spec(spec)
+        # spec.loader.exec_module(tunnel_mod)
+        # tunnel_mod.CLOUDFLARED_EXECUTABLE = CLOUDFLARED_PATH
+        # # spec.loader.exec_module(tunnel_mod)
 
-        tunnel_url = tunnel_mod.start_tunnel(f"localhost:{port}")
+        tunnel_url = tunnel.start_tunnel(f"localhost:{port}")
 
         if tunnel_url:
             tunnels_col().insert_one({
@@ -134,17 +137,11 @@ def stop_all_tunnels():
     Stops all running cloudflared tunnels and clears the tunnels collection.
     Called when a project is deleted or all projects are stopped.
     """
-    if not CLOUDFLARED_PATH:
+    if not tunnel.CLOUDFLARED_EXECUTABLE:
         return
 
     try:
-        import importlib.util
-        tunnel_path = os.path.join(os.path.dirname(__file__), "tunnel.py")
-        spec = importlib.util.spec_from_file_location("tunnel", tunnel_path)
-        tunnel_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(tunnel_mod)
-        tunnel_mod.CLOUDFLARED_EXECUTABLE = CLOUDFLARED_PATH
-        tunnel_mod.stop_tunnels()
+        tunnel.stop_tunnels()
         tunnels_col().delete_many({})
         print("  [TUNNEL] All tunnels stopped and collection cleared.")
     except Exception as e:
@@ -279,6 +276,7 @@ def build_and_deploy(deployment_id: str, project_id: str, repo_url: str, port: i
         docker_cmd = [
             "docker", "run", "-d",
             "--name", project_id,
+            "--network", DOCKER_NETWORK,    # ensure container is on the same network as other containers
             "-p", f"{port}:{container_port}",
             "--restart", "unless-stopped",
         ]

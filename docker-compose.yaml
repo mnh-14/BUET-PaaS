@@ -1,0 +1,29 @@
+services:
+  buet-paas-frontend:
+      build:
+        context: ./frontend
+        dockerfile: Dockerfile
+        args:
+          BACKEND_URL: http://host.docker.internal:8000
+      container_name: BUET-PaaS-frontend
+      restart: always
+      ports:
+        - "3000:3000"
+      environment:
+        # This points the Next.js rewrite logic to your Windows Python server
+        - BACKEND_URL=http://host.docker.internal:8000
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
+
+
+  buet-paas-database:
+    image: mongo:latest
+    container_name: BUET-PaaS-mongodb
+    restart: always
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=buetpaas
+    volumes:
+      # This is the Bind Mount. No bottom-level declaration needed.
+      - ./database:/data/db

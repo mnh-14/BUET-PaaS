@@ -6,9 +6,11 @@ import time
 import re
 import tempfile
 import os
+import dotenv
 
+dotenv.load_dotenv()
 
-CLOUDFLARED_EXECUTABLE = "D:\\Softwares\\Cloudflared\\cloudflared-windows-amd64.exe"
+CLOUDFLARED_EXECUTABLE = os.getenv("CLOUDFLARED_EXECUTABLE", "D:\\Softwares\\Cloudflared\\cloudflared-windows-amd64.exe")  # Default to 'cloudflared' in PATH
 
 
 def stop_tunnels1():

@@ -99,6 +99,7 @@ export async function createProject(data: {
   repo_url: string;
   user_id: string;
   project_name: string;
+  env_vars?: Record<string, string>;
 }): Promise<{ project_id: string; deployment_id: string; message: string }> {
   const res = await apiFetch(`${BASE_URL}/api/v1/projects`, {
     method: "POST",

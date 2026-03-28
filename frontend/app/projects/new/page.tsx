@@ -17,6 +17,20 @@ interface GitHubRepo {
   updated_at: string;
 }
 
+interface EnvVarRow {
+  id: string;
+  key: string;
+  value: string;
+}
+
+function makeEnvVarRow(): EnvVarRow {
+  return {
+    id: `env-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    key: "",
+    value: "",
+  };
+}
+
 export default function NewProjectPage() {
   const { user } = useAuth();
   const router = useRouter();
@@ -33,6 +47,7 @@ export default function NewProjectPage() {
   const [repoError, setRepoError] = useState("");
   const [showRepoDropdown, setShowRepoDropdown] = useState(false);
   const [repoFilter, setRepoFilter] = useState("");
+  const [envVars, setEnvVars] = useState<EnvVarRow[]>([makeEnvVarRow()]);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -94,16 +109,50 @@ export default function NewProjectPage() {
     setRepoFilter("");
   }
 
+  function addEnvVarRow() {
+    setEnvVars((prev) => [...prev, makeEnvVarRow()]);
+  }
+
+  function removeEnvVarRow(id: string) {
+    setEnvVars((prev) => prev.filter((row) => row.id !== id));
+  }
+
+  function updateEnvVarRow(
+    id: string,
+    field: "key" | "value",
+    value: string,
+  ) {
+    setEnvVars((prev) =>
+      prev.map((row) => (row.id === id ? { ...row, [field]: value } : row)),
+    );
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!user) return;
     setError("");
     setLoading(true);
+
+    const envMap: Record<string, string> = {};
+    for (const row of envVars) {
+      const key = row.key.trim();
+      const value = row.value.trim();
+
+      if (!key) continue;
+      if (Object.hasOwn(envMap, key)) {
+        setError(`Duplicate environment variable key: ${key}`);
+        setLoading(false);
+        return;
+      }
+      envMap[key] = value;
+    }
+
     try {
       const data = await createProject({
         repo_url: repoUrl,
         user_id: user.user_id,
         project_name: projectName,
+        env_vars: envMap,
       });
       router.push(`/projects/${data.project_id}`);
     } catch (err: unknown) {
@@ -260,6 +309,67 @@ export default function NewProjectPage() {
                 onChange={(e) => setProjectName(e.target.value)}
                 required
               />
+            </div>
+
+            {/* Environment Variables */}
+            <div>
+              <div className="flex items-center justify-between gap-3 mb-1.5">
+                <label className="block text-xs font-mono text-gray-400">
+                  Environment Variables (Optional)
+                </label>
+                <button
+                  type="button"
+                  onClick={addEnvVarRow}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#c8f135]/20 text-xs font-mono text-[#c8f135] hover:bg-[#c8f135]/10 hover:border-[#c8f135]/40 transition-colors"
+                >
+                  <span className="text-sm leading-none">+</span>
+                  Add Variable
+                </button>
+              </div>
+              <p className="text-xs text-gray-600 mb-3">
+                These values are passed to your app container at runtime.
+              </p>
+
+              <div className="bg-[#121212] border border-[#2a2a2a] rounded-xl p-3 sm:p-4 space-y-2.5">
+                {envVars.length === 0 ? (
+                  <p className="text-xs text-gray-600">
+                    No variables added yet. Click Add Variable.
+                  </p>
+                ) : (
+                  envVars.map((row) => (
+                    <div
+                      key={row.id}
+                      className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2"
+                    >
+                      <input
+                        type="text"
+                        className={inputClass}
+                        placeholder="KEY"
+                        value={row.key}
+                        onChange={(e) =>
+                          updateEnvVarRow(row.id, "key", e.target.value)
+                        }
+                      />
+                      <input
+                        type="text"
+                        className={inputClass}
+                        placeholder="value"
+                        value={row.value}
+                        onChange={(e) =>
+                          updateEnvVarRow(row.id, "value", e.target.value)
+                        }
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeEnvVarRow(row.id)}
+                        className="px-3 py-2.5 rounded-lg border border-red-900/40 text-xs font-mono text-red-400 hover:bg-red-900/20 transition-colors"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
 
             {error && (
