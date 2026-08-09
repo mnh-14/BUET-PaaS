@@ -7,11 +7,13 @@
 import os
 import stat
 import hashlib
+import asyncio
 import shutil
 import subprocess
 import threading
 import time
 import uuid
+import re
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, BackgroundTasks, HTTPException
@@ -19,6 +21,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+from config import SonarSettings
+from services.sonarqube_service import (
+    SonarQubeError,
+    SonarQubeService,
+)
 
 import tunnel
 from db import (
@@ -69,7 +77,10 @@ def find_free_port() -> int:
     used = {
         doc["port"]
         for doc in deployments_col().find(
-            {"status": {"$in": ["queued", "cloning", "building", "starting", "running"]},
+            {"status": {"$in": [
+                "queued", "cloning", "security_scan_running",
+                "security_scan_passed", "building", "starting", "running"
+            ]},
              "port": {"$exists": True}},
             {"port": 1}
         )
@@ -198,7 +209,49 @@ def find_dockerfile(work_dir: str) -> str | None:
     return None  
 
 
-def build_and_deploy(deployment_id: str, project_id: str, repo_url: str, port: int, env_vars: dict = None):
+COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+def _run_git(work_dir: str, *arguments: str, timeout: int = 60) -> str:
+    result = subprocess.run(
+        ["git", "-C", work_dir, *arguments],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        shell=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"git {' '.join(arguments)} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def checkout_and_verify_commit(work_dir: str, expected_commit_sha: str | None) -> str:
+    """Checkout one immutable revision and return the verified full SHA."""
+    if expected_commit_sha and not COMMIT_SHA_PATTERN.fullmatch(expected_commit_sha):
+        raise RuntimeError("Invalid expected commit SHA")
+
+    current_head = _run_git(work_dir, "rev-parse", "HEAD").lower()
+    target_sha = (expected_commit_sha or current_head).lower()
+    if expected_commit_sha and current_head != target_sha:
+        _run_git(work_dir, "fetch", "--depth", "1", "origin", target_sha)
+    _run_git(work_dir, "checkout", "--detach", target_sha)
+    verified_head = _run_git(work_dir, "rev-parse", "HEAD").lower()
+    if verified_head != target_sha:
+        raise RuntimeError(
+            f"Checked-out commit mismatch: expected {target_sha}, got {verified_head}"
+        )
+    return verified_head
+
+
+def build_and_deploy(
+    deployment_id: str,
+    project_id: str,
+    repo_url: str,
+    port: int,
+    env_vars: dict | None = None,
+    expected_commit_sha: str | None = None,
+    project_name: str | None = None,
+):
     work_dir  = f"/tmp/buetpaas_{deployment_id}"
     image_tag = f"buetpaas/{project_id}:latest"
 
@@ -219,6 +272,13 @@ def build_and_deploy(deployment_id: str, project_id: str, repo_url: str, port: i
         )
         print(f"  [{deployment_id[:8]}] status → {status}")
 
+    def set_security_scan(**fields):
+        fields["provider"] = "sonarqube"
+        deployments_col().update_one(
+            {"deployment_id": deployment_id},
+            {"$set": {f"security_scan.{key}": value for key, value in fields.items()}},
+        )
+
     project_lock = get_project_lock(project_id)
     with project_lock:
       try:
@@ -227,12 +287,94 @@ def build_and_deploy(deployment_id: str, project_id: str, repo_url: str, port: i
 
         r = subprocess.run(
             ["git", "clone", "--depth", "1", repo_url, work_dir],
-            capture_output=True, text=True, timeout=60
+            capture_output=True, text=True, timeout=60, shell=False
         )
         if r.returncode != 0:
             raise RuntimeError(
                 f"git clone failed — is the repo PUBLIC?\n\n{r.stderr.strip()}"
             )
+        commit_sha = checkout_and_verify_commit(work_dir, expected_commit_sha)
+        print(f"  [{deployment_id[:8]}] verified commit {commit_sha}")
+        deployments_col().update_one(
+            {"deployment_id": deployment_id},
+            {"$set": {"commit_sha": commit_sha}},
+        )
+
+        try:
+            sonar_settings = SonarSettings.from_env()
+        except ValueError as exc:
+            error = f"Invalid SonarQube configuration: {exc}"
+            set_security_scan(
+                commit_sha=commit_sha,
+                status="error",
+                quality_gate=None,
+                started_at=None,
+                completed_at=datetime.now(timezone.utc),
+                error=error,
+            )
+            set_status("security_scan_error", error=error)
+            return
+        if sonar_settings.enabled:
+            scan_started_at = datetime.now(timezone.utc)
+            set_status("security_scan_running")
+            set_security_scan(
+                project_key=None,
+                commit_sha=commit_sha,
+                status="running",
+                quality_gate=None,
+                started_at=scan_started_at,
+                completed_at=None,
+                error=None,
+            )
+            try:
+                scan_result = SonarQubeService(sonar_settings).scan_repository(
+                    work_dir,
+                    repository_id=project_id,
+                    project_name=project_name or project_id,
+                    commit_sha=commit_sha,
+                )
+            except SonarQubeError as exc:
+                set_security_scan(
+                    status="error",
+                    completed_at=datetime.now(timezone.utc),
+                    error=str(exc),
+                )
+                set_status("security_scan_error", error=str(exc))
+                return
+            except Exception:
+                # Fail closed without returning an internal traceback or environment data.
+                error = "Security scan could not complete"
+                set_security_scan(
+                    status="error",
+                    completed_at=datetime.now(timezone.utc),
+                    error=error,
+                )
+                set_status("security_scan_error", error=error)
+                return
+
+            set_security_scan(
+                project_key=scan_result.project_key,
+                status="passed" if scan_result.success else "failed",
+                quality_gate=scan_result.quality_gate,
+                analysis_url=scan_result.analysis_url,
+                scanner_exit_code=scan_result.scanner_exit_code,
+                completed_at=datetime.now(timezone.utc),
+                error=scan_result.error,
+            )
+            if not scan_result.success:
+                set_status("security_scan_failed", error=scan_result.error)
+                return
+            set_status("security_scan_passed")
+        else:
+            set_security_scan(
+                commit_sha=commit_sha,
+                status="skipped",
+                quality_gate=None,
+                started_at=None,
+                completed_at=datetime.now(timezone.utc),
+                error=None,
+            )
+
         set_status("building")
 
         if pack_available():
@@ -533,7 +675,16 @@ def create_project(body: ProjectCreate, bg: BackgroundTasks):
         })
     # lock released here — port is now safely recorded in DB
 
-    bg.add_task(build_and_deploy, deployment_id, project_id, body.repo_url, port, body.env_vars)
+    bg.add_task(
+        build_and_deploy,
+        deployment_id,
+        project_id,
+        body.repo_url,
+        port,
+        body.env_vars,
+        None,
+        body.project_name,
+    )
 
     return {
         "project_id":    project_id,
@@ -642,7 +793,11 @@ def get_deployment(deployment_id: str):
 
 
 @app.post("/api/v1/deployments/redeploy/{project_id}")
-def redeploy_project(project_id: str, bg: BackgroundTasks):
+def redeploy_project(
+    project_id: str,
+    bg: BackgroundTasks,
+    expected_commit_sha: str | None = None,
+):
     project = projects_col().find_one({"project_id": project_id})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
@@ -666,13 +821,20 @@ def redeploy_project(project_id: str, bg: BackgroundTasks):
         "public_url":    None,
         "port":          port,
         "deployed_at":   now,
-        "updated_at":    now
+        "updated_at":    now,
+        "expected_commit_sha": expected_commit_sha,
     })
 
     env_vars = project.get("env_vars", {})
     bg.add_task(
         build_and_deploy,
-        deployment_id, project_id, project["repo_url"], port, env_vars
+        deployment_id,
+        project_id,
+        project["repo_url"],
+        port,
+        env_vars,
+        expected_commit_sha,
+        project.get("project_name"),
     )
     return {
         "deployment_id": deployment_id,
@@ -720,3 +882,22 @@ def health():
         "version": app.version,
         "mongodb": db_status
     }
+
+
+@app.get("/api/v1/sonarqube/health")
+async def sonarqube_health():
+    """Report SonarQube readiness without exposing configuration or credentials."""
+    try:
+        settings = SonarSettings.from_env()
+    except ValueError:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "unavailable", "sonarqube": "CONFIGURATION_ERROR"},
+        ) from None
+    result = await asyncio.to_thread(SonarQubeService(settings).check_health)
+    if not result["available"]:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "unavailable", "sonarqube": result["status"]},
+        )
+    return {"status": "ok", "sonarqube": result["status"]}

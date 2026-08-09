@@ -9,6 +9,7 @@
 - Python 3.11+
 - Docker Desktop (or Docker Engine + Compose)
 - Git
+- SonarScanner CLI (required when `SONAR_ENABLED=true`)
 - Cloudflared binary (for public tunnel URLs via `tunnel.py`)
 
 ### Required Docker network
@@ -149,6 +150,8 @@ Below are the primary API endpoints implemented in `main.py`. Replace `:8000` wi
 { "status": "ok", "version": "0.2.0", "mongodb": "connected" }
 ```
 
+- **GET /api/v1/sonarqube/health**: Checks the configured SonarQube server. It returns HTTP 200 when the server reports `UP`, otherwise HTTP 503.
+
 - **POST /api/v1/users**: Register a new student. Body (JSON):
 
 ```json
@@ -243,6 +246,11 @@ MONGO_URI=mongodb+srv://<username>:<password>@cluster.example.mongodb.net/?retry
 MONGO_DB=buetpaas
 CLOUDFLARED_EXECUTABLE=D:\Softwares\Cloudflared\cloudflared-windows-amd64.exe
 GITHUB_PAT=<Your github personal access token>
+SONAR_ENABLED=true
+SONAR_HOST_URL=http://192.168.67.252:9000
+SONAR_TOKEN=<Your SonarQube token>
+SONAR_SCANNER_BIN=sonar-scanner
+SONAR_SCAN_TIMEOUT=300
 ```
 
 Notes:
@@ -250,3 +258,53 @@ Notes:
 - `MONGO_URI` and `MONGO_DB` are used by `db.py`. If you run MongoDB through your Docker setup, these can usually be omitted to use defaults.
 - `CLOUDFLARED_EXECUTABLE` is used by `tunnel.py` and tunnel integration inside `main.py`.
 - `GITHUB_PAT` is used by `poller.py` to authenticate GitHub API calls and increase API limits.
+- `SONAR_TOKEN` is read only at runtime. It is passed to SonarScanner through the process environment and is never persisted in MongoDB or placed in scanner command-line arguments.
+- `SONAR_ENABLED` defaults to `true` and is fail-closed. Set it explicitly to `false` only for a development environment that must preserve the pre-scan deployment flow.
+- `SONAR_SCAN_TIMEOUT` controls both Quality Gate waiting and scanner execution (with a small process-shutdown allowance).
+
+## SonarQube security gate
+
+The background deployment task performs this sequence:
+
+```text
+clone -> checkout requested commit -> verify HEAD -> SonarScanner
+      -> Quality Gate passed -> Pack/Docker build -> container deployment
+```
+
+The GitHub poller passes its exact observed 40-character commit SHA into the redeploy endpoint. For manually created deployments, the backend records the cloned `HEAD`, detach-checks it out, verifies it, and uses it for both scanning and building. A scanner error, timeout, unavailable server, authentication error, or failed Quality Gate stops before image building. Deployment documents contain an optional compact `security_scan` summary and `commit_sha`; full scanner output and credentials are not stored.
+
+Relevant statuses are `security_scan_running`, `security_scan_passed`, `security_scan_failed`, and `security_scan_error`. When scanning is disabled, the summary status is `skipped` and the previous build/deploy behavior continues.
+
+Verify the local scanner and server connectivity:
+
+```bash
+sonar-scanner --version
+curl -fsS http://192.168.67.252:9000/api/system/status
+curl -i http://localhost:8000/api/v1/sonarqube/health
+```
+
+Run the mocked unit and deployment-gate tests (no live SonarQube, GitHub, Docker, or MongoDB required):
+
+```bash
+cd backend
+source venv/bin/activate
+python -m pytest -q
+```
+
+Example successful scan information returned by `GET /api/v1/deployments/{deployment_id}`:
+
+```json
+{
+  "deployment_id": "dep-a1b2c3d4",
+  "status": "running",
+  "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+  "security_scan": {
+    "provider": "sonarqube",
+    "project_key": "buet-paas:proj-a1b2c3d4",
+    "status": "passed",
+    "quality_gate": "OK",
+    "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+    "error": null
+  }
+}
+```

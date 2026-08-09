@@ -10,6 +10,7 @@ Run in a separate terminal AFTER main.py is already running:
 
 import os
 import time
+from urllib.parse import urlencode
 from datetime import datetime, timezone
 
 import requests
@@ -69,9 +70,10 @@ def get_latest_sha(owner: str, repo: str) -> str | None:
     return resp.json()["commit"]["sha"]
 
 
-def trigger_redeploy(project_id: str):
+def trigger_redeploy(project_id: str, commit_sha: str):
     """Sends POST /api/v1/deployments/redeploy/{project_id} to main.py."""
-    url = f"{ORCHESTRATOR_URL}/api/v1/deployments/redeploy/{project_id}"
+    query = urlencode({"expected_commit_sha": commit_sha})
+    url = f"{ORCHESTRATOR_URL}/api/v1/deployments/redeploy/{project_id}?{query}"
     try:
         resp = requests.post(url, timeout=10)
         if resp.status_code == 200:
@@ -156,7 +158,7 @@ def poll_once():
                 )
 
                 # Trigger redeploy via HTTP
-                trigger_redeploy(project_id)
+                trigger_redeploy(project_id, latest_sha)
 
         except Exception as exc:
             print(f"    [ERROR] {exc}")
