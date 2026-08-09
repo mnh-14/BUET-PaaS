@@ -54,6 +54,7 @@ def install_pipeline_fakes(monkeypatch, scan_outcome, enabled=True):
     monkeypatch.setattr(main, "pack_available", lambda: True)
     monkeypatch.setattr(main, "find_dockerfile", lambda _path: None)
     monkeypatch.setattr(main, "get_or_create_tunnel", lambda *_args: "http://example")
+    monkeypatch.setattr(main, "wait_for_container_ready", lambda *_args: events.append("ready"))
     monkeypatch.setattr(main.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(main, "SonarQubeService", FakeSonarService)
     monkeypatch.setattr(
@@ -97,7 +98,7 @@ def statuses(collection):
 def test_successful_pipeline_scans_before_build_and_deploy(monkeypatch):
     events, deployments = install_pipeline_fakes(monkeypatch, result())
     run_deployment()
-    assert events == ["clone", "checkout", "scan", "build", "deploy"]
+    assert events == ["clone", "checkout", "scan", "build", "deploy", "ready"]
     assert "security_scan_passed" in statuses(deployments)
     assert statuses(deployments)[-1] == "running"
 
@@ -121,5 +122,21 @@ def test_quality_gate_failure_stops_before_build(monkeypatch):
 def test_disabled_scanning_preserves_build_and_deploy(monkeypatch):
     events, deployments = install_pipeline_fakes(monkeypatch, result(), enabled=False)
     run_deployment()
-    assert events == ["clone", "checkout", "build", "deploy"]
+    assert events == ["clone", "checkout", "build", "deploy", "ready"]
     assert statuses(deployments)[-1] == "running"
+
+
+def test_unready_container_does_not_publish_tunnel(monkeypatch):
+    events, deployments = install_pipeline_fakes(monkeypatch, result())
+    tunnel = Mock(return_value="http://should-not-be-created")
+    monkeypatch.setattr(main, "get_or_create_tunnel", tunnel)
+    monkeypatch.setattr(
+        main,
+        "wait_for_container_ready",
+        Mock(side_effect=RuntimeError("container is not ready")),
+    )
+
+    run_deployment()
+
+    tunnel.assert_not_called()
+    assert statuses(deployments)[-1] == "failed"

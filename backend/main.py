@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 import re
+import socket
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, BackgroundTasks, HTTPException
@@ -52,7 +53,8 @@ PORT_END        = 9999
 PACK_BUILDER    = "paketobuildpacks/builder-jammy-base"
 DEFAULT_CONTAINER_PORT = 3000  
 # tunnel.CLOUDFLARED_EXECUTABLE= "paketobuildpacks/builder-jammy-base"
-DOCKER_NETWORK = "BUET-PaaS-network-v1.0" # ensure this Docker network exists 
+DOCKER_NETWORK = "BUET-PaaS-network-v1.0"  # ensure this Docker network exists
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
@@ -206,7 +208,39 @@ def find_dockerfile(work_dir: str) -> str | None:
             print(f"  [BUILD] Dockerfile found in {rel}/")
             return root
 
-    return None  
+    return None
+
+
+def wait_for_container_ready(project_id: str, port: int, timeout: int = 30) -> None:
+    """Require the container to stay alive and accept TCP before publishing a URL."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        inspection = subprocess.run(
+            [
+                "docker", "inspect", "--format",
+                "{{.State.Running}} {{.State.Status}} {{.State.ExitCode}}",
+                project_id,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            shell=False,
+        )
+        state = inspection.stdout.strip().lower()
+        if inspection.returncode != 0 or not state.startswith("true "):
+            raise RuntimeError(
+                "Container exited before becoming ready. Check the container logs."
+            )
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                return
+        except OSError:
+            time.sleep(1)
+
+    raise RuntimeError(
+        f"Container is running but did not accept connections on host port {port} "
+        f"within {timeout} seconds. Verify the Dockerfile EXPOSE port."
+    )
 
 
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -358,6 +392,8 @@ def build_and_deploy(
                 quality_gate=scan_result.quality_gate,
                 analysis_url=scan_result.analysis_url,
                 scanner_exit_code=scan_result.scanner_exit_code,
+                conditions=scan_result.conditions,
+                issues=scan_result.issues,
                 completed_at=datetime.now(timezone.utc),
                 error=scan_result.error,
             )
@@ -434,7 +470,7 @@ def build_and_deploy(
         if r.returncode != 0:
             raise RuntimeError(f"docker run failed:\n\n{r.stderr.strip()}")
 
-       
+        wait_for_container_ready(project_id, port)
         url = get_or_create_tunnel(port, project_id)
         set_status("running", url=url)
         print(f"  [{deployment_id[:8]}] ✓ Running at {url}")
@@ -467,11 +503,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount(
+    "/static",
+    StaticFiles(directory=os.path.join(BACKEND_DIR, "static")),
+    name="static",
+)
 
 @app.get("/", include_in_schema=False)
 def root():
-    return FileResponse("static/index.html")
+    return FileResponse(os.path.join(BACKEND_DIR, "static", "index.html"))
 
 class UserCreate(BaseModel):
     user_id:  str       # student roll

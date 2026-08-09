@@ -4,7 +4,7 @@ import logging
 import os
 import re
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,7 @@ QUALITY_GATE_FAILURE_PATTERNS = (
     "quality gate status: error",
     "quality gate failed",
 )
+REPORT_TASK_PATH = Path(".scannerwork/report-task.txt")
 DEFAULT_EXCLUSIONS = ",".join(
     (
         ".git/**",
@@ -62,6 +63,8 @@ class SonarAnalysisResult:
     scanner_exit_code: int
     analysis_url: str | None = None
     error: str | None = None
+    conditions: list[dict[str, Any]] = field(default_factory=list)
+    issues: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -174,18 +177,58 @@ class SonarQubeService:
         analysis_url = analysis_url_match.group(1) if analysis_url_match else None
 
         if any(pattern in lowered for pattern in QUALITY_GATE_FAILURE_PATTERNS):
+            quality_gate = "ERROR"
+            conditions: list[dict[str, Any]] = []
+            issues: list[dict[str, Any]] = []
+            try:
+                api_gate, metadata_url, conditions = self._get_quality_gate_for_analysis(
+                    repository
+                )
+                if api_gate != "OK":
+                    quality_gate = api_gate
+                analysis_url = metadata_url or analysis_url
+                issues = self._get_open_issues(project_key)
+            except SonarQubeError:
+                logger.warning(
+                    "Quality Gate details were unavailable (project_key=%s)", project_key
+                )
             logger.warning("Quality Gate failed (project_key=%s)", project_key)
             return SonarAnalysisResult(
                 project_key=project_key,
                 commit_sha=commit_sha.lower(),
                 success=False,
-                quality_gate="ERROR",
+                quality_gate=quality_gate,
                 scanner_exit_code=completed.returncode,
                 analysis_url=analysis_url,
                 error="SonarQube Quality Gate failed",
+                conditions=conditions,
+                issues=issues,
             )
 
         if completed.returncode == 0:
+            quality_gate, metadata_url, conditions = self._get_quality_gate_for_analysis(
+                repository
+            )
+            analysis_url = metadata_url or analysis_url
+            if quality_gate != "OK":
+                issues = self._get_open_issues(project_key)
+                logger.warning(
+                    "Quality Gate failed (project_key=%s, status=%s)",
+                    project_key,
+                    quality_gate,
+                )
+                return SonarAnalysisResult(
+                    project_key=project_key,
+                    commit_sha=commit_sha.lower(),
+                    success=False,
+                    quality_gate=quality_gate,
+                    scanner_exit_code=completed.returncode,
+                    analysis_url=analysis_url,
+                    error=f"SonarQube Quality Gate status is {quality_gate}",
+                    conditions=conditions,
+                    issues=issues,
+                )
+
             logger.info("Quality Gate passed (project_key=%s)", project_key)
             return SonarAnalysisResult(
                 project_key=project_key,
@@ -199,6 +242,121 @@ class SonarQubeService:
         error = self._classify_scanner_failure(lowered)
         logger.error("Scanner failed (project_key=%s, exit_code=%s): %s", project_key, completed.returncode, error)
         raise SonarScannerError(error)
+
+    def _get_quality_gate_for_analysis(
+        self, repository: Path
+    ) -> tuple[str, str | None, list[dict[str, Any]]]:
+        """Read the scanner task metadata and verify this exact analysis via Web API."""
+        metadata_path = repository / REPORT_TASK_PATH
+        try:
+            metadata = {
+                key: value
+                for line in metadata_path.read_text(encoding="utf-8").splitlines()
+                if "=" in line
+                for key, value in [line.split("=", 1)]
+            }
+        except OSError as exc:
+            raise SonarScannerError(
+                "SonarScanner completed without analysis task metadata"
+            ) from exc
+
+        ce_task_id = metadata.get("ceTaskId")
+        if not ce_task_id:
+            raise SonarScannerError("SonarScanner analysis task ID is missing")
+
+        task_payload = self._api_get("/api/ce/task", params={"id": ce_task_id})
+        task = task_payload.get("task", {})
+        if str(task.get("status", "")).upper() != "SUCCESS":
+            raise SonarScannerError(
+                f"SonarQube analysis processing failed (status={task.get('status', 'UNKNOWN')})"
+            )
+        analysis_id = task.get("analysisId")
+        if not analysis_id:
+            raise SonarScannerError("SonarQube analysis ID is missing")
+
+        gate_payload = self._api_get(
+            "/api/qualitygates/project_status", params={"analysisId": analysis_id}
+        )
+        gate_status = str(
+            gate_payload.get("projectStatus", {}).get("status", "NONE")
+        ).upper()
+        if gate_status == "NONE":
+            raise SonarScannerError("No SonarQube Quality Gate result was returned")
+        conditions = [
+            {
+                "status": str(condition.get("status", "UNKNOWN")).upper(),
+                "metric": str(condition.get("metricKey", "unknown")),
+                "comparator": condition.get("comparator"),
+                "actual_value": condition.get("actualValue"),
+                "error_threshold": condition.get("errorThreshold"),
+            }
+            for condition in gate_payload.get("projectStatus", {}).get("conditions", [])
+            if isinstance(condition, dict)
+        ]
+        return gate_status, metadata.get("dashboardUrl"), conditions
+
+    def _get_open_issues(self, project_key: str) -> list[dict[str, Any]]:
+        """Return a bounded, display-safe issue summary with locations when available."""
+        try:
+            payload = self._api_get(
+                "/api/issues/search",
+                params={
+                    "componentKeys": project_key,
+                    "resolved": "false",
+                    "ps": "20",
+                },
+            )
+        except SonarQubeError as exc:
+            logger.warning(
+                "Could not load SonarQube issue details (project_key=%s): %s",
+                project_key,
+                exc,
+            )
+            return []
+
+        issues: list[dict[str, Any]] = []
+        component_prefix = f"{project_key}:"
+        for issue in payload.get("issues", []):
+            if not isinstance(issue, dict):
+                continue
+            component = str(issue.get("component", ""))
+            path = (
+                component.removeprefix(component_prefix)
+                if component.startswith(component_prefix)
+                else component
+            )
+            issues.append(
+                {
+                    "key": issue.get("key"),
+                    "message": str(issue.get("message", "Security issue detected"))[:500],
+                    "severity": issue.get("severity"),
+                    "type": issue.get("type"),
+                    "rule": issue.get("rule"),
+                    "file": path or None,
+                    "line": issue.get("line"),
+                }
+            )
+        return issues
+
+    def _api_get(self, path: str, *, params: dict[str, str]) -> dict[str, Any]:
+        try:
+            response = self.session.get(
+                f"{self.settings.host_url}{path}",
+                params=params,
+                headers={"Authorization": f"Bearer {self.settings.token}"},
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.HTTPError as exc:
+            status_code = getattr(exc.response, "status_code", None)
+            if status_code in {401, 403}:
+                raise SonarScannerError("SonarQube authentication failed") from exc
+            raise SonarScannerError("SonarQube API request failed") from exc
+        except (requests.RequestException, ValueError) as exc:
+            raise SonarQubeUnavailableError(
+                "SonarQube became unavailable while checking the Quality Gate"
+            ) from exc
 
     def _validate_workspace(self, repository_path: str | Path) -> Path:
         repository = Path(repository_path).resolve()

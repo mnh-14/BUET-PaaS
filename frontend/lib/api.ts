@@ -19,12 +19,48 @@ export interface Deployment {
   port?: number;
   public_url?: string;
   error_summary?: string;
+  commit_sha?: string;
+  security_scan?: SecurityScan;
   deployed_at: string;
+}
+
+export interface SecurityScanCondition {
+  status: string;
+  metric: string;
+  comparator?: string | null;
+  actual_value?: string | null;
+  error_threshold?: string | null;
+}
+
+export interface SecurityIssue {
+  key?: string | null;
+  message: string;
+  severity?: string | null;
+  type?: string | null;
+  rule?: string | null;
+  file?: string | null;
+  line?: number | null;
+}
+
+export interface SecurityScan {
+  provider: "sonarqube";
+  project_key?: string | null;
+  commit_sha?: string | null;
+  status: "running" | "passed" | "failed" | "error" | "skipped";
+  quality_gate?: string | null;
+  analysis_url?: string | null;
+  error?: string | null;
+  conditions?: SecurityScanCondition[];
+  issues?: SecurityIssue[];
 }
 
 export type DeploymentStatus =
   | "queued"
   | "cloning"
+  | "security_scan_running"
+  | "security_scan_passed"
+  | "security_scan_failed"
+  | "security_scan_error"
   | "building"
   | "starting"
   | "running"

@@ -31,12 +31,14 @@ def settings(**overrides):
     return SonarSettings(**values)
 
 
-def response(status="UP", status_code=200):
+def response(status="UP", status_code=200, payload=None):
     result = Mock()
-    result.json.return_value = {"status": status}
-    result.raise_for_status.side_effect = (
-        requests.HTTPError("request failed") if status_code >= 400 else None
-    )
+    result.status_code = status_code
+    result.json.return_value = payload if payload is not None else {"status": status}
+    if status_code >= 400:
+        error = requests.HTTPError("request failed")
+        error.response = result
+        result.raise_for_status.side_effect = error
     return result
 
 
@@ -75,12 +77,46 @@ def make_repository(tmp_path: Path) -> Path:
     repository = tmp_path / "repository"
     repository.mkdir()
     (repository / ".git").mkdir()
+    scannerwork = repository / ".scannerwork"
+    scannerwork.mkdir()
+    (scannerwork / "report-task.txt").write_text(
+        "ceTaskId=ce-task-1\ndashboardUrl=http://sonar/dashboard\n",
+        encoding="utf-8",
+    )
     return repository
 
 
-def service_with_up_health(tmp_path: Path) -> SonarQubeService:
+def service_with_up_health(tmp_path: Path, gate_status="OK") -> SonarQubeService:
     session = Mock()
-    session.get.return_value = response()
+    def get(url, **_kwargs):
+        if url.endswith("/api/system/status"):
+            return response()
+        if url.endswith("/api/ce/task"):
+            return response(payload={"task": {"status": "SUCCESS", "analysisId": "analysis-1"}})
+        if url.endswith("/api/qualitygates/project_status"):
+            return response(payload={"projectStatus": {
+                "status": gate_status,
+                "conditions": [{
+                    "status": gate_status,
+                    "metricKey": "new_security_rating",
+                    "comparator": "GT",
+                    "actualValue": "3",
+                    "errorThreshold": "1",
+                }],
+            }})
+        if url.endswith("/api/issues/search"):
+            return response(payload={"issues": [{
+                "key": "issue-1",
+                "message": "Use a parameterized query",
+                "severity": "CRITICAL",
+                "type": "VULNERABILITY",
+                "rule": "python:S3649",
+                "component": "buet-paas:proj-1:app.py",
+                "line": 42,
+            }]})
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    session.get.side_effect = get
     return SonarQubeService(settings(), session=session, workspace_root=tmp_path)
 
 
@@ -119,6 +155,25 @@ def test_quality_gate_failure_returns_failed_result(monkeypatch, tmp_path):
         Mock(return_value=subprocess.CompletedProcess([], 2, "QUALITY GATE STATUS: FAILED", "")),
     )
     result = service_with_up_health(tmp_path).scan_repository(
+        repository, "proj-1", "Project", COMMIT
+    )
+    assert result.success is False
+    assert result.quality_gate == "ERROR"
+    assert result.conditions[0]["metric"] == "new_security_rating"
+    assert result.issues[0]["file"] == "app.py"
+    assert result.issues[0]["line"] == 42
+
+
+def test_successful_scanner_still_stops_when_api_quality_gate_failed(
+    monkeypatch, tmp_path
+):
+    repository = make_repository(tmp_path)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        Mock(return_value=subprocess.CompletedProcess([], 0, "EXECUTION SUCCESS", "")),
+    )
+    result = service_with_up_health(tmp_path, gate_status="ERROR").scan_repository(
         repository, "proj-1", "Project", COMMIT
     )
     assert result.success is False
