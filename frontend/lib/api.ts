@@ -79,7 +79,7 @@ export interface Project {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 async function apiFetch(url: string, options?: RequestInit): Promise<Response> {
-  return fetch(url, options);
+  return fetch(url, { ...options, credentials: "include" });
 }
 
 async function handleResponse<T>(res: Response): Promise<T> {
@@ -124,6 +124,16 @@ export async function loginUser(data: {
   return handleResponse(res);
 }
 
+export async function getSession(): Promise<{ user: User }> {
+  const res = await apiFetch(`${BASE_URL}/api/v1/session`);
+  return handleResponse(res);
+}
+
+export async function logoutUser(): Promise<void> {
+  const res = await apiFetch(`${BASE_URL}/api/v1/users/logout`, { method: "POST" });
+  return handleResponse(res);
+}
+
 // ─── Projects ─────────────────────────────────────────────────────────────────
 
 export async function getUserProjects(user_id: string): Promise<Project[]> {
@@ -132,8 +142,9 @@ export async function getUserProjects(user_id: string): Promise<Project[]> {
 }
 
 export async function createProject(data: {
-  repo_url: string;
-  user_id: string;
+  github_installation_id: number;
+  github_repo_id: number;
+  deploy_branch: string;
   project_name: string;
   env_vars?: Record<string, string>;
 }): Promise<{ project_id: string; deployment_id: string; message: string }> {
@@ -143,6 +154,55 @@ export async function createProject(data: {
     body: JSON.stringify(data),
   });
   return handleResponse(res);
+}
+
+export interface GitHubInstallation {
+  installation_id: number;
+  account_login?: string;
+  account_type?: string;
+  repository_selection?: string;
+  status?: string;
+  connection_status?: string;
+}
+
+export interface GitHubRepository {
+  installation_id: number;
+  account_login?: string;
+  id: number;
+  name: string;
+  full_name: string;
+  private: boolean;
+  default_branch: string;
+  html_url: string;
+}
+
+export interface GitHubBranch {
+  name: string;
+  sha: string;
+}
+
+export async function getGitHubInstallations(): Promise<GitHubInstallation[]> {
+  const res = await apiFetch(`${BASE_URL}/api/v1/github/installations`);
+  const data = await handleResponse<{ installations: GitHubInstallation[] }>(res);
+  return data.installations;
+}
+
+export async function getGitHubRepositories(): Promise<GitHubRepository[]> {
+  const res = await apiFetch(`${BASE_URL}/api/v1/github/repositories`);
+  const data = await handleResponse<{ repositories: GitHubRepository[] }>(res);
+  return data.repositories;
+}
+
+export async function getGitHubBranches(
+  repositoryId: number,
+  installationId: number,
+): Promise<GitHubBranch[]> {
+  const query = new URLSearchParams({ installation_id: String(installationId) });
+  const res = await apiFetch(
+    `${BASE_URL}/api/v1/github/repositories/${repositoryId}/branches?${query}`,
+  );
+  const data = await handleResponse<{ branches: GitHubBranch[] }>(res);
+  return data.branches;
 }
 
 export async function getProject(project_id: string): Promise<Project> {

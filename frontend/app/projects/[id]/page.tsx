@@ -160,7 +160,7 @@ function DeleteModal({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ProjectDetailPage() {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const router = useRouter();
   const params = useParams();
   const projectId = params.id as string;
@@ -178,8 +178,8 @@ export default function ProjectDetailPage() {
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    if (!user) router.replace("/");
-  }, [user, router]);
+    if (!authLoading && !user) router.replace("/");
+  }, [user, authLoading, router]);
 
   const stopPolling = useCallback(() => {
     if (intervalRef.current) {
@@ -268,7 +268,7 @@ export default function ProjectDetailPage() {
     }
   }
 
-  if (!user) return null;
+  if (authLoading || !user) return null;
 
   return (
     <div className="min-h-screen bg-[#0d0d0d]">

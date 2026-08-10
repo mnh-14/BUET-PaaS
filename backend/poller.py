@@ -1,4 +1,8 @@
 """
+DEPRECATED: GitHub App webhooks are the normal deployment trigger.
+Do not run this poller alongside webhook auto-deployment. It remains only as
+temporary legacy reference and may be removed after production reconciliation.
+
 BUET-PaaS Commit Poller (Module A — Synchronization Gateway)
 
 Watches GitHub every POLL_INTERVAL seconds.

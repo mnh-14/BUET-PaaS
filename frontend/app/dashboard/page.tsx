@@ -25,26 +25,24 @@ function SkeletonCard() {
 }
 
 export default function DashboardPage() {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const router = useRouter();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!user) {
-      router.replace("/");
-      return;
-    }
+    if (authLoading) return;
+    if (!user) return void router.replace("/");
     getUserProjects(user.user_id)
       .then(setProjects)
       .catch((err: unknown) =>
         setError(err instanceof Error ? err.message : "Failed to load projects")
       )
       .finally(() => setLoading(false));
-  }, [user, router]);
+  }, [user, authLoading, router]);
 
-  if (!user) return null;
+  if (authLoading || !user) return null;
 
   return (
     <div className="min-h-screen bg-[#0d0d0d]">

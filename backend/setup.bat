@@ -117,11 +117,6 @@ echo     cd backend\
 echo     venv\Scripts\activate
 echo     uvicorn main:app --reload --host 0.0.0.0 --port 8000
 echo.
-echo   Start the poller (second terminal):
-echo     cd backend\
-echo     venv\Scripts\activate
-echo     python poller.py
-echo.
 echo   Dashboard  -^>  http://localhost:8000
 echo   API Docs   -^>  http://localhost:8000/docs
 echo   Health     -^>  http://localhost:8000/health

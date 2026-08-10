@@ -60,6 +60,18 @@ def tunnels_col() -> Collection:
     """
     return get_db()["tunnels"]
 
+def github_installations_col() -> Collection:
+    return get_db()["github_installations"]
+
+def github_connections_col() -> Collection:
+    return get_db()["github_connections"]
+
+def github_oauth_states_col() -> Collection:
+    return get_db()["github_oauth_states"]
+
+def github_webhook_deliveries_col() -> Collection:
+    return get_db()["github_webhook_deliveries"]
+
 
 def init_indexes():
     users_col().create_index("user_id", unique=True)
@@ -74,11 +86,35 @@ def init_indexes():
     deployments_col().create_index("project_id")                      
     deployments_col().create_index([("project_id", ASCENDING),
                                     ("deployed_at", DESCENDING)])     
+    deployments_col().create_index(
+        "automatic_key",
+        unique=True,
+        partialFilterExpression={"automatic_key": {"$type": "string"}},
+    )
 
     polling_col().create_index("project_id", unique=True)
 
     tunnels_col().create_index("port", unique=True)
     tunnels_col().create_index("project_id")
+
+    github_installations_col().create_index("installation_id", unique=True)
+    github_connections_col().create_index(
+        [("user_id", ASCENDING), ("installation_id", ASCENDING)], unique=True
+    )
+    github_connections_col().create_index("installation_id")
+    github_oauth_states_col().create_index("state_hash", unique=True)
+    github_oauth_states_col().create_index("expires_at", expireAfterSeconds=0)
+    github_webhook_deliveries_col().create_index("delivery_id", unique=True)
+    github_webhook_deliveries_col().create_index(
+        "expires_at", expireAfterSeconds=0
+    )
+    projects_col().create_index(
+        [
+            ("github_installation_id", ASCENDING),
+            ("github_repo_id", ASCENDING),
+            ("deploy_branch", ASCENDING),
+        ]
+    )
 
     print("MongoDB indexes initialized.")
 
