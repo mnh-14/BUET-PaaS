@@ -47,10 +47,22 @@ def verify_webhook_signature(raw_body: bytes, signature: str | None, secret: str
 
 def consume_oauth_state(state: str) -> dict[str, Any] | None:
     state_doc = github_oauth_states_col().find_one_and_delete(
-        {"state_hash": _state_hash(state)}, return_document=ReturnDocument.BEFORE
+        {"state_hash": _state_hash(state)},
+        return_document=ReturnDocument.BEFORE,
     )
-    if not state_doc or state_doc["expires_at"] <= _now():
+
+    if not state_doc:
         return None
+
+    expires_at = state_doc["expires_at"]
+
+    # PyMongo may return UTC datetime without tzinfo.
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    if expires_at <= _now():
+        return None
+
     return state_doc
 
 
@@ -134,7 +146,6 @@ def create_github_router(worker: Callable[..., None]) -> APIRouter:
         now = _now()
         for installation in verified:
             document = _installation_document(installation)
-            document.setdefault("created_at", now)
             github_installations_col().update_one(
                 {"installation_id": document["installation_id"]},
                 {"$set": document, "$setOnInsert": {"created_at": now}},
