@@ -1,5 +1,6 @@
 "use client";
 
+import { v4 as uuidv4 } from "uuid";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -16,7 +17,7 @@ import {
 } from "@/lib/api";
 
 interface EnvRow { id: string; key: string; value: string }
-const newRow = (): EnvRow => ({ id: crypto.randomUUID(), key: "", value: "" });
+const newRow = (): EnvRow => ({ id: uuidv4(), key: "", value: "" });
 
 export default function NewProjectPage() {
   const { user, loading: authLoading } = useAuth();
