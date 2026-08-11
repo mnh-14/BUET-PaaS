@@ -1,0 +1,18 @@
+# 1. High Priority for Live Customer Webapps
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: deployment-rank
+value: 1000000
+globalDefault: false
+description: "Guarantees live user webapps get memory/CPU priority and can evict build jobs."
+
+---
+# 2. Low Priority for Background Build Jobs
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: builder-rank
+value: 1000
+globalDefault: false
+description: "Kaniko build jobs yield resources to live webapps."
