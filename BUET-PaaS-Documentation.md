@@ -195,8 +195,7 @@ docker push 192.168.64.121/paas-builder/builder-image:latest 192.168.64.121/paas
 *(Placeholder — list remaining/planned work here. A few known items to seed this list with, based on team discussion and the current codebase — edit/expand freely.)*
 
 - [ ] Ready the Frontend <---> Backend <---> DB so that the required informations in `deploy.py` is properly prepared and saved
-- [ ] 
-- [ ]💡**Proposed Soln** Resolve the "no reply" gap in the build request to K3s Cluster (step 2 above) — likely via an event bus (RabbitMQ / NATS / Kafka / Redis Streams) so each stage publishes a completion event the next stage listens for, instead of a fire-and-forget call.
+- [ ] 💡**Proposed Soln** Resolve the "no reply" gap in the build request to K3s Cluster (step 2 above) — likely via an event bus (RabbitMQ / NATS / Kafka / Redis Streams) so each stage publishes a completion event the next stage listens for, instead of a fire-and-forget call.
 - [ ] Alternative under consideration: a sequential build-job pipeline (git pull → code scan → image gen → image scan → push to registry) that triggers deploy-service only once all steps succeed.
 - [ ] Decide how code/artifacts are shared between the image builder and the code scanner.
 - [x] Wire `deployer/deploy.py` up to the Backend so `user_config` comes from real API/user input instead of a hardcoded dict.
