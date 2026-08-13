@@ -96,7 +96,7 @@ user_config = {
 }
 
 
-def build_image():
+def build_image(user_config: Dict[str, Any]):
     builder = JobPipelineBuilder(app_name=user_config["app_name"])
     builder.apply_git_cloner(git_url="https://github.com/mnh-14/calculator-tester.git", branch="main")
     # builder.apply_trivy_scan(severity="CRITICAL,HIGH", fail_on_cve=True)
@@ -106,7 +106,7 @@ def build_image():
     utils.create_from_dict(k3s_client, build_conf)
 
 
-def deploy_application():
+def deploy_application(user_config: Dict[str, Any]):
     user_config["image"] = f"{user_config['app_name']}-{user_config['namespace']}-build:latest"
     manifest_builder = PaaSManifestBuilder(config=user_config)
 
@@ -126,9 +126,9 @@ if __name__ == "__main__":
 
     action = sys.argv[1]
     if action == "build":
-        build_image()
+        build_image(user_config)
     elif action == "deploy":
-        deploy_application()
+        deploy_application(user_config)
     else:
         print("Invalid action. Use 'build' or 'deploy'.")
         sys.exit(1)

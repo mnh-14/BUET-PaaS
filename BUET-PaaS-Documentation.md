@@ -68,6 +68,8 @@ This diagram traces one deployment through the system, from the Backend kicking 
 
 Step 2 (`Build this (conf)` → K3s Cluster) has **no reply/confirmation**. If the build fails or the message is lost while the image-generation job is still "in flight," Deploy Service has no signal to detect the failure. This is an open design problem the team is actively addressing (see "What Needs to Be Done" below — event bus proposal).
 
+[Nafis::] My proposed fix here is, properly using the utils.create_from_dict(k3s_client, build_conf) this function. It has the means to check if the applied job/development is i. Queued or ii. Started or iii. Crashed [::Nafis]
+
 ### 2.3 Deployer — Implementation Details (from codebase, `deployer/` folder)
 
 The `deployer/` folder is the concrete Python implementation of the "Deploy Service" and "K3s Cluster" interaction described above. It talks to the k3s cluster via the official Kubernetes Python client, using a local kubeconfig.
@@ -116,7 +118,24 @@ This maps each `deployer/` file to the step(s) of the sequence flow (§2.2) it i
 
 ---
 
-## 3. Current State
+## 3. How to update the build pipeline 
+ To update the build pipeling (meaning adding new actions like sonarcube scans) the folders inside `deployer/builder-config` needs to be modified
+ - First: The `Dockerfile` must include the new binaries and other necessary tools to complete the task
+ - Second: A new `taskname.sh` script must be made ready to execute the task with proper prints. This will help with the debugging or logging, for the users or admins to troubleshoot.
+ - Third: After including this .sh script, the new builder image must be build using docker.
+ - Four: After the image is ready the image is to push under tag `192.168.64.121/paas-builder/builder-image:latest` and `192.168.64.121/paas-builder/builder-image:vx.x` [x.x is the latest version]
+
+Example Commands:
+```bash
+docker login
+docker build -t my-image-builder:v2.5 .
+docker tag my-image-builder:v2.5 192.168.64.121/paas-builder/builder-image:latest 192.168.64.121/paas-builder/builder-image:v2.5
+docker push 192.168.64.121/paas-builder/builder-image:latest 192.168.64.121/paas-builder/builder-image:v2.5
+```
+
+---
+
+## 4. Current State
 
 *(Placeholder — each teammate should fill in their own component's status below. Keep entries factual and dated where possible.)*
 
@@ -154,7 +173,8 @@ This maps each `deployer/` file to the step(s) of the sequence flow (§2.2) it i
 
 ---
 
-## 4. What Is Done
+
+## 5. What Is Done
 
 *(Placeholder — list completed work here, one bullet per item, tag with component/owner if helpful.)*
 
@@ -167,11 +187,12 @@ This maps each `deployer/` file to the step(s) of the sequence flow (§2.2) it i
 
 ---
 
-## 5. What Needs to Be Done
+
+## 6. What Needs to Be Done
 
 *(Placeholder — list remaining/planned work here. A few known items to seed this list with, based on team discussion and the current codebase — edit/expand freely.)*
 
-- Resolve the "no reply" gap in the build request to K3s Cluster (step 2 above) — likely via an event bus (RabbitMQ / NATS / Kafka / Redis Streams) so each stage publishes a completion event the next stage listens for, instead of a fire-and-forget call.
+- [OK soln proposed by Nafis] Resolve the "no reply" gap in the build request to K3s Cluster (step 2 above) — likely via an event bus (RabbitMQ / NATS / Kafka / Redis Streams) so each stage publishes a completion event the next stage listens for, instead of a fire-and-forget call.
 - Alternative under consideration: a sequential build-job pipeline (git pull → code scan → image gen → image scan → push to registry) that triggers deploy-service only once all steps succeed.
 - Decide how code/artifacts are shared between the image builder and the code scanner.
 - Wire `deployer/deploy.py` up to the Backend so `user_config` comes from real API/user input instead of a hardcoded dict.
