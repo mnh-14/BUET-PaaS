@@ -122,9 +122,10 @@ This maps each `deployer/` file to the step(s) of the sequence flow (§2.2) it i
 ## 3. How to update the build pipeline 
  To update the build pipeling (meaning adding new actions like sonarcube scans) the folders inside `deployer/builder-config` needs to be modified
  - First: The `Dockerfile` must include the new binaries and other necessary tools to complete the task
- - Second: A new `taskname.sh` script must be made ready to execute the task with proper prints. This will help with the debugging or logging, for the users or admins to troubleshoot.
+ - Second: A new or updated `taskname.sh` script must be made ready to execute the task with proper prints. This will help with the debugging or logging, for the users or admins to troubleshoot.
  - Third: After including this .sh script, the new builder image must be build using docker.
  - Four: After the image is ready the image is to push under tag `192.168.64.121/paas-builder/builder-image:latest` and `192.168.64.121/paas-builder/builder-image:vx.x` [x.x is the latest version]
+ - Finally: For each update to any of the .sh scripts included in `Dockerfile`, the new image must be built in updoaded
 
 Example Commands:
 ```bash
@@ -193,10 +194,12 @@ docker push 192.168.64.121/paas-builder/builder-image:latest 192.168.64.121/paas
 
 *(Placeholder — list remaining/planned work here. A few known items to seed this list with, based on team discussion and the current codebase — edit/expand freely.)*
 
-- [💡] **Proposed Soln** Resolve the "no reply" gap in the build request to K3s Cluster (step 2 above) — likely via an event bus (RabbitMQ / NATS / Kafka / Redis Streams) so each stage publishes a completion event the next stage listens for, instead of a fire-and-forget call.
+- [ ] Ready the Frontend <---> Backend <---> DB so that the required informations in `deploy.py` is properly prepared and saved
+- [ ] 
+- [ ]💡**Proposed Soln** Resolve the "no reply" gap in the build request to K3s Cluster (step 2 above) — likely via an event bus (RabbitMQ / NATS / Kafka / Redis Streams) so each stage publishes a completion event the next stage listens for, instead of a fire-and-forget call.
 - [ ] Alternative under consideration: a sequential build-job pipeline (git pull → code scan → image gen → image scan → push to registry) that triggers deploy-service only once all steps succeed.
 - [ ] Decide how code/artifacts are shared between the image builder and the code scanner.
-- [ ] Wire `deployer/deploy.py` up to the Backend so `user_config` comes from real API/user input instead of a hardcoded dict.
+- [x] Wire `deployer/deploy.py` up to the Backend so `user_config` comes from real API/user input instead of a hardcoded dict.
 - [ ] Re-enable the Trivy scan step in the build Job pipeline (currently implemented but commented out in `deploy.py`).
 - [ ] Decide on and enable the security-hardening options already scaffolded in `PaaSManifestBuilder` (non-root enforcement, container-level security context, read-only rootfs) which are currently present in code but disabled/commented out.
 - [ ] Remove `--skip-tls-verify` from the Kaniko push once Harbor's TLS setup is fully trusted end-to-end from the builder Job.
@@ -222,4 +225,5 @@ docker push 192.168.64.121/paas-builder/builder-image:latest 192.168.64.121/paas
 
 ---
 
-*Last updated: [fill in date] — please update this doc as the project evolves rather than letting it go stale.*
+*Last updated: [13.08.2026 9:40 AM] — please update this doc as the project evolves rather than letting it go stale.*
+*By Nafis: added Section 3, proposed a soln to an Issue in step 2*

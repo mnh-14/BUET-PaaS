@@ -21,6 +21,9 @@ user_config = {
     "app_name": "calculator",                  # Unique application name Provided by the user
     # "image": target_image,                        # [PS: Target container image to deploy, we decide what it is
                                                   # we create it, store it, use it, and deploy it. (e.g., "myregistry.com/myapp:latest")]
+    "git_url": "https://github.com/mnh-14/calculator-tester.git",
+    "git_branch": "main",                       # Git branch to clone for building the image
+    "dockerfile_path": "Dockerfile",              # Path to Dockerfile in the repo (relative to repo root)
     
     # Domain Resolution: Provide at least one (domain_override takes precedence)
     # "worker_ip": "192.168.10.101",               # K3s Node IP -> my-custom-app.192.168.10.101.sslip.io
@@ -98,10 +101,10 @@ user_config = {
 
 def build_image(user_config: Dict[str, Any]):
     builder = JobPipelineBuilder(app_name=user_config["app_name"])
-    builder.apply_git_cloner(git_url="https://github.com/mnh-14/calculator-tester.git", branch="main")
+    builder.apply_git_cloner(git_url=user_config["git_url"], branch=user_config["git_branch"])
     # builder.apply_trivy_scan(severity="CRITICAL,HIGH", fail_on_cve=True)
     user_config["image"] = f"{user_config['app_name']}-{user_config['namespace']}-build:latest"
-    builder.apply_kaniko_build(image_destination=user_config["image"], dockerfile_path="Dockerfile")
+    builder.apply_kaniko_build(image_destination=user_config["image"], dockerfile_path=user_config["dockerfile_path"])
     build_conf = builder.build()
     utils.create_from_dict(k3s_client, build_conf)
 
@@ -111,9 +114,6 @@ def deploy_application(user_config: Dict[str, Any]):
     manifest_builder = PaaSManifestBuilder(config=user_config)
 
     manifest_as_list = manifest_builder.build_all_listed()
-    for item in manifest_as_list['items']:
-        if type(item)==str:
-            print(item)
     utils.create_from_dict(k3s_client, data=manifest_as_list)
 
 
