@@ -68,7 +68,8 @@ This diagram traces one deployment through the system, from the Backend kicking 
 
 Step 2 (`Build this (conf)` → K3s Cluster) has **no reply/confirmation**. If the build fails or the message is lost while the image-generation job is still "in flight," Deploy Service has no signal to detect the failure. This is an open design problem the team is actively addressing (see "What Needs to Be Done" below — event bus proposal).
 
-[Nafis::] My proposed fix here is, properly using the utils.create_from_dict(k3s_client, build_conf) this function. It has the means to check if the applied job/development is i. Queued or ii. Started or iii. Crashed [::Nafis]
+> [!TIP]
+> **Proposed Fix (Nafis):** Use `utils.create_from_dict(k3s_client, build_conf)`. It includes built-in mechanisms to monitor whether the applied resource is **Queued**, **Started**, or **Crashed**.
 
 ### 2.3 Deployer — Implementation Details (from codebase, `deployer/` folder)
 
@@ -192,19 +193,19 @@ docker push 192.168.64.121/paas-builder/builder-image:latest 192.168.64.121/paas
 
 *(Placeholder — list remaining/planned work here. A few known items to seed this list with, based on team discussion and the current codebase — edit/expand freely.)*
 
-- [OK soln proposed by Nafis] Resolve the "no reply" gap in the build request to K3s Cluster (step 2 above) — likely via an event bus (RabbitMQ / NATS / Kafka / Redis Streams) so each stage publishes a completion event the next stage listens for, instead of a fire-and-forget call.
-- Alternative under consideration: a sequential build-job pipeline (git pull → code scan → image gen → image scan → push to registry) that triggers deploy-service only once all steps succeed.
-- Decide how code/artifacts are shared between the image builder and the code scanner.
-- Wire `deployer/deploy.py` up to the Backend so `user_config` comes from real API/user input instead of a hardcoded dict.
-- Re-enable the Trivy scan step in the build Job pipeline (currently implemented but commented out in `deploy.py`).
-- Decide on and enable the security-hardening options already scaffolded in `PaaSManifestBuilder` (non-root enforcement, container-level security context, read-only rootfs) which are currently present in code but disabled/commented out.
-- Remove `--skip-tls-verify` from the Kaniko push once Harbor's TLS setup is fully trusted end-to-end from the builder Job.
-- Migrate orchestrator, dashboard, and state store fully onto OpenStack.
-- Replace GitHub polling with a webhook relay.
-- Stand up BUET SSO integration.
-- Wire in security scanning tools (SonarQube, Trivy, Gitleaks, OPA-Gatekeeper) into the pipeline.
-- Set up observability stack (Prometheus/Grafana, ELK/EFK, Wazuh).
-- Run pilot validation with real student/team projects.
+- [💡] **Proposed Soln** Resolve the "no reply" gap in the build request to K3s Cluster (step 2 above) — likely via an event bus (RabbitMQ / NATS / Kafka / Redis Streams) so each stage publishes a completion event the next stage listens for, instead of a fire-and-forget call.
+- [ ] Alternative under consideration: a sequential build-job pipeline (git pull → code scan → image gen → image scan → push to registry) that triggers deploy-service only once all steps succeed.
+- [ ] Decide how code/artifacts are shared between the image builder and the code scanner.
+- [ ] Wire `deployer/deploy.py` up to the Backend so `user_config` comes from real API/user input instead of a hardcoded dict.
+- [ ] Re-enable the Trivy scan step in the build Job pipeline (currently implemented but commented out in `deploy.py`).
+- [ ] Decide on and enable the security-hardening options already scaffolded in `PaaSManifestBuilder` (non-root enforcement, container-level security context, read-only rootfs) which are currently present in code but disabled/commented out.
+- [ ] Remove `--skip-tls-verify` from the Kaniko push once Harbor's TLS setup is fully trusted end-to-end from the builder Job.
+- [ ] Migrate orchestrator, dashboard, and state store fully onto OpenStack.
+- [ ] Replace GitHub polling with a webhook relay.
+- [ ] Stand up BUET SSO integration.
+- [ ] Wire in security scanning tools (SonarQube, Trivy, Gitleaks, OPA-Gatekeeper) into the pipeline.
+- [ ] Set up observability stack (Prometheus/Grafana, ELK/EFK, Wazuh).
+- [ ] Run pilot validation with real student/team projects.
 
 ---
 
