@@ -8,49 +8,46 @@ import React, {
   useCallback,
 } from "react";
 import { useRouter } from "next/navigation";
-import { User } from "@/lib/api";
-
-const STORAGE_KEY = "buetpaas_user";
+import { getSession, logoutUser, User } from "@/lib/api";
 
 interface AuthContextValue {
   user: User | null;
+  loading: boolean;
   login: (userData: User) => void;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue>({
   user: null,
+  loading: true,
   login: () => {},
-  logout: () => {},
+  logout: async () => {},
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
   const router = useRouter();
 
-  // Hydrate from localStorage on mount
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) setUser(JSON.parse(raw) as User);
-    } catch {
-      /* ignore corrupted storage */
-    }
+    getSession()
+      .then(({ user: sessionUser }) => setUser(sessionUser))
+      .catch(() => setUser(null))
+      .finally(() => setLoading(false));
   }, []);
 
   const login = useCallback((userData: User) => {
     setUser(userData);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(userData));
   }, []);
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    await logoutUser().catch(() => undefined);
     setUser(null);
-    localStorage.removeItem(STORAGE_KEY);
     router.push("/");
   }, [router]);
 
   return (
-    <AuthContext.Provider value={{ user, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, logout }}>
       {children}
     </AuthContext.Provider>
   );

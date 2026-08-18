@@ -7,18 +7,39 @@
 import os
 import stat
 import hashlib
+import asyncio
 import shutil
 import subprocess
 import threading
 import time
 import uuid
+import re
+import socket
+import tempfile
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+from auth import (
+    clear_session_cookie,
+    enforce_same_origin,
+    hash_password,
+    require_user,
+    set_session_cookie,
+    verify_password,
+)
+from config import GitHubAppSettings, SonarSettings
+from deployment_service import queue_deployment
+from github_app import GitHubAppService
+from github_routes import create_github_router
+from services.sonarqube_service import (
+    SonarQubeError,
+    SonarQubeService,
+)
 
 import tunnel
 from db import (
@@ -26,6 +47,8 @@ from db import (
     projects_col,
     deployments_col,
     tunnels_col,
+    github_connections_col,
+    github_installations_col,
     init_indexes,
     ping
 )
@@ -44,12 +67,8 @@ PORT_END        = 9999
 PACK_BUILDER    = "paketobuildpacks/builder-jammy-base"
 DEFAULT_CONTAINER_PORT = 3000  
 # tunnel.CLOUDFLARED_EXECUTABLE= "paketobuildpacks/builder-jammy-base"
-DOCKER_NETWORK = "BUET-PaaS-network-v1.0" # ensure this Docker network exists 
-
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
-
-
+DOCKER_NETWORK = "BUET-PaaS-network-v1.0"  # ensure this Docker network exists
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 
 _port_lock = threading.Lock()
 _project_locks: dict[str, threading.Lock] = {}
@@ -69,7 +88,10 @@ def find_free_port() -> int:
     used = {
         doc["port"]
         for doc in deployments_col().find(
-            {"status": {"$in": ["queued", "cloning", "building", "starting", "running"]},
+            {"status": {"$in": [
+                "queued", "cloning", "security_scan_running",
+                "security_scan_passed", "building", "starting", "running"
+            ]},
              "port": {"$exists": True}},
             {"port": 1}
         )
@@ -195,10 +217,190 @@ def find_dockerfile(work_dir: str) -> str | None:
             print(f"  [BUILD] Dockerfile found in {rel}/")
             return root
 
-    return None  
+    return None
 
 
-def build_and_deploy(deployment_id: str, project_id: str, repo_url: str, port: int, env_vars: dict = None):
+def wait_for_container_ready(project_id: str, port: int, timeout: int = 30) -> None:
+    """Require the container to stay alive and accept TCP before publishing a URL."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        inspection = subprocess.run(
+            [
+                "docker", "inspect", "--format",
+                "{{.State.Running}} {{.State.Status}} {{.State.ExitCode}}",
+                project_id,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            shell=False,
+        )
+        state = inspection.stdout.strip().lower()
+        if inspection.returncode != 0 or not state.startswith("true "):
+            raise RuntimeError(
+                "Container exited before becoming ready. Check the container logs."
+            )
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                return
+        except OSError:
+            time.sleep(1)
+
+    raise RuntimeError(
+        f"Container is running but did not accept connections on host port {port} "
+        f"within {timeout} seconds. Verify the Dockerfile EXPOSE port."
+    )
+
+
+COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+def _run_git(work_dir: str, *arguments: str, timeout: int = 60) -> str:
+    result = subprocess.run(
+        ["git", "-C", work_dir, *arguments],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        shell=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"git {' '.join(arguments)} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def checkout_and_verify_commit(work_dir: str, expected_commit_sha: str | None) -> str:
+    """Checkout one immutable revision and return the verified full SHA."""
+    if expected_commit_sha and not COMMIT_SHA_PATTERN.fullmatch(expected_commit_sha):
+        raise RuntimeError("Invalid expected commit SHA")
+
+    current_head = _run_git(work_dir, "rev-parse", "HEAD").lower()
+    target_sha = (expected_commit_sha or current_head).lower()
+    if expected_commit_sha and current_head != target_sha:
+        _run_git(work_dir, "fetch", "--depth", "1", "origin", target_sha)
+    _run_git(work_dir, "checkout", "--detach", target_sha)
+    verified_head = _run_git(work_dir, "rev-parse", "HEAD").lower()
+    if verified_head != target_sha:
+        raise RuntimeError(
+            f"Checked-out commit mismatch: expected {target_sha}, got {verified_head}"
+        )
+    return verified_head
+
+
+def resolve_public_branch(repo_url: str, branch: str) -> str:
+    result = subprocess.run(
+        ["git", "ls-remote", repo_url, f"refs/heads/{branch}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        shell=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        raise HTTPException(status_code=400, detail="Repository branch could not be resolved")
+    commit_sha = result.stdout.split()[0].lower()
+    if not COMMIT_SHA_PATTERN.fullmatch(commit_sha):
+        raise HTTPException(status_code=502, detail="GitHub returned an invalid commit SHA")
+    return commit_sha
+
+
+def clone_repository(
+    repo_url: str,
+    work_dir: str,
+    *,
+    installation_id: int | None,
+    repository_id: int | None,
+    expected_commit_sha: str | None = None,
+) -> str | None:
+    """Clone public or GitHub App repository without putting credentials in argv."""
+    environment = os.environ.copy()
+    askpass_path: str | None = None
+    try:
+        if installation_id is not None:
+            if repository_id is None:
+                raise RuntimeError("GitHub repository identity is incomplete")
+            token = GitHubAppService(
+                GitHubAppSettings.from_env(require_complete=True)
+            ).create_installation_token(installation_id, repository_id)
+            helper = tempfile.NamedTemporaryFile(
+                mode="w", prefix="buetpaas-askpass-", suffix=".py", delete=False
+            )
+            askpass_path = helper.name
+            helper.write(
+                "#!/usr/bin/env python3\n"
+                "import os, sys\n"
+                "prompt = sys.argv[1].lower() if len(sys.argv) > 1 else ''\n"
+                "print('x-access-token' if 'username' in prompt else os.environ['BUETPAAS_GIT_TOKEN'])\n"
+            )
+            helper.close()
+            os.chmod(askpass_path, stat.S_IRUSR | stat.S_IXUSR)
+            environment.update({
+                "GIT_ASKPASS": askpass_path,
+                "GIT_TERMINAL_PROMPT": "0",
+                "BUETPAAS_GIT_TOKEN": token,
+            })
+        result = subprocess.run(
+            ["git", "clone", "--no-checkout", "--filter=blob:none", repo_url, work_dir],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            shell=False,
+            env=environment,
+        )
+        if result.returncode != 0:
+            message = result.stderr.lower()
+            if "authentication" in message or "not found" in message:
+                raise RuntimeError("GitHub repository access was denied or revoked")
+            raise RuntimeError("Git repository clone failed")
+        if expected_commit_sha is None:
+            return None
+        if not COMMIT_SHA_PATTERN.fullmatch(expected_commit_sha):
+            raise RuntimeError("Invalid expected commit SHA")
+        target = expected_commit_sha.lower()
+        checkout = subprocess.run(
+            ["git", "-C", work_dir, "checkout", "--detach", target],
+            capture_output=True, text=True, timeout=60, shell=False, env=environment,
+        )
+        if checkout.returncode != 0:
+            fetch = subprocess.run(
+                ["git", "-C", work_dir, "fetch", "--depth", "1", "origin", target],
+                capture_output=True, text=True, timeout=60, shell=False, env=environment,
+            )
+            if fetch.returncode != 0:
+                raise RuntimeError("Requested commit is no longer fetchable from GitHub")
+            checkout = subprocess.run(
+                ["git", "-C", work_dir, "checkout", "--detach", target],
+                capture_output=True, text=True, timeout=60, shell=False, env=environment,
+            )
+            if checkout.returncode != 0:
+                raise RuntimeError("Requested commit could not be checked out")
+        verified = subprocess.run(
+            ["git", "-C", work_dir, "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=30, shell=False, env=environment,
+        )
+        if verified.returncode != 0 or verified.stdout.strip().lower() != target:
+            raise RuntimeError("Checked-out commit does not match the requested SHA")
+        return target
+    finally:
+        environment.pop("BUETPAAS_GIT_TOKEN", None)
+        if askpass_path:
+            try:
+                os.unlink(askpass_path)
+            except FileNotFoundError:
+                pass
+
+
+def build_and_deploy(
+    deployment_id: str,
+    project_id: str,
+    repo_url: str,
+    port: int,
+    env_vars: dict | None = None,
+    expected_commit_sha: str | None = None,
+    project_name: str | None = None,
+    github_installation_id: int | None = None,
+    github_repo_id: int | None = None,
+    github_full_name: str | None = None,
+    branch: str = "main",
+):
     work_dir  = f"/tmp/buetpaas_{deployment_id}"
     image_tag = f"buetpaas/{project_id}:latest"
 
@@ -219,20 +421,115 @@ def build_and_deploy(deployment_id: str, project_id: str, repo_url: str, port: i
         )
         print(f"  [{deployment_id[:8]}] status → {status}")
 
+    def set_security_scan(**fields):
+        fields["provider"] = "sonarqube"
+        deployments_col().update_one(
+            {"deployment_id": deployment_id},
+            {"$set": {f"security_scan.{key}": value for key, value in fields.items()}},
+        )
+
     project_lock = get_project_lock(project_id)
     with project_lock:
       try:
         set_status("cloning")
         safe_rmtree(work_dir)
 
-        r = subprocess.run(
-            ["git", "clone", "--depth", "1", repo_url, work_dir],
-            capture_output=True, text=True, timeout=60
+        commit_sha = clone_repository(
+            repo_url,
+            work_dir,
+            installation_id=github_installation_id,
+            repository_id=github_repo_id,
+            expected_commit_sha=expected_commit_sha,
         )
-        if r.returncode != 0:
-            raise RuntimeError(
-                f"git clone failed — is the repo PUBLIC?\n\n{r.stderr.strip()}"
+        if commit_sha is None:
+            commit_sha = checkout_and_verify_commit(work_dir, expected_commit_sha)
+        print(f"  [{deployment_id[:8]}] verified commit {commit_sha}")
+        deployments_col().update_one(
+            {"deployment_id": deployment_id},
+            {"$set": {"commit_sha": commit_sha}},
+        )
+        projects_col().update_one(
+            {"project_id": project_id},
+            {"$set": {"last_deployed_sha": commit_sha, "deploy_branch": branch}},
+        )
+
+        try:
+            sonar_settings = SonarSettings.from_env()
+        except ValueError as exc:
+            error = f"Invalid SonarQube configuration: {exc}"
+            set_security_scan(
+                commit_sha=commit_sha,
+                status="error",
+                quality_gate=None,
+                started_at=None,
+                completed_at=datetime.now(timezone.utc),
+                error=error,
             )
+            set_status("security_scan_error", error=error)
+            return
+        if sonar_settings.enabled:
+            scan_started_at = datetime.now(timezone.utc)
+            set_status("security_scan_running")
+            set_security_scan(
+                project_key=None,
+                commit_sha=commit_sha,
+                status="running",
+                quality_gate=None,
+                started_at=scan_started_at,
+                completed_at=None,
+                error=None,
+            )
+            try:
+                scan_result = SonarQubeService(sonar_settings).scan_repository(
+                    work_dir,
+                    repository_id=project_id,
+                    project_name=project_name or project_id,
+                    commit_sha=commit_sha,
+                )
+            except SonarQubeError as exc:
+                set_security_scan(
+                    status="error",
+                    completed_at=datetime.now(timezone.utc),
+                    error=str(exc),
+                )
+                set_status("security_scan_error", error=str(exc))
+                return
+            except Exception:
+                # Fail closed without returning an internal traceback or environment data.
+                error = "Security scan could not complete"
+                set_security_scan(
+                    status="error",
+                    completed_at=datetime.now(timezone.utc),
+                    error=error,
+                )
+                set_status("security_scan_error", error=error)
+                return
+
+            set_security_scan(
+                project_key=scan_result.project_key,
+                status="passed" if scan_result.success else "failed",
+                quality_gate=scan_result.quality_gate,
+                analysis_url=scan_result.analysis_url,
+                scanner_exit_code=scan_result.scanner_exit_code,
+                conditions=scan_result.conditions,
+                issues=scan_result.issues,
+                completed_at=datetime.now(timezone.utc),
+                error=scan_result.error,
+            )
+            if not scan_result.success:
+                set_status("security_scan_failed", error=scan_result.error)
+                return
+            set_status("security_scan_passed")
+        else:
+            set_security_scan(
+                commit_sha=commit_sha,
+                status="skipped",
+                quality_gate=None,
+                started_at=None,
+                completed_at=datetime.now(timezone.utc),
+                error=None,
+            )
+
         set_status("building")
 
         if pack_available():
@@ -292,7 +589,7 @@ def build_and_deploy(deployment_id: str, project_id: str, repo_url: str, port: i
         if r.returncode != 0:
             raise RuntimeError(f"docker run failed:\n\n{r.stderr.strip()}")
 
-       
+        wait_for_container_ready(project_id, port)
         url = get_or_create_tunnel(port, project_id)
         set_status("running", url=url)
         print(f"  [{deployment_id[:8]}] ✓ Running at {url}")
@@ -315,6 +612,7 @@ async def lifespan(app: FastAPI):
             "Check MONGO_URI in your .env file."
         )
     init_indexes()
+    GitHubAppSettings.from_env(require_complete=True)
     yield
 
 
@@ -325,11 +623,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount(
+    "/static",
+    StaticFiles(directory=os.path.join(BACKEND_DIR, "static")),
+    name="static",
+)
 
 @app.get("/", include_in_schema=False)
 def root():
-    return FileResponse("static/index.html")
+    return FileResponse(os.path.join(BACKEND_DIR, "static", "index.html"))
 
 class UserCreate(BaseModel):
     user_id:  str       # student roll
@@ -342,8 +644,11 @@ class UserLogin(BaseModel):
     password: str
 
 class ProjectCreate(BaseModel):
-    repo_url:     str
-    user_id:      str
+    github_installation_id: int | None = None
+    github_repo_id: int | None = None
+    deploy_branch: str = "main"
+    repo_url: str | None = None
+    user_id: str | None = None  # accepted for legacy clients, never trusted
     project_name: str = "my-project"
     env_vars:     dict[str, str] = {}
 class ProjectResponse(BaseModel):
@@ -403,7 +708,7 @@ def create_user(body: UserCreate):
 
 
 @app.post("/api/v1/users/login")
-def login(body: UserLogin):
+def login(body: UserLogin, response: Response):
     """
     Verify student credentials.
     Returns user profile on success (without password_hash).
@@ -416,21 +721,41 @@ def login(body: UserLogin):
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
-    if user["password_hash"] != hash_password(body.password):
+    valid, replacement = verify_password(body.password, user["password_hash"])
+    if not valid:
         raise HTTPException(status_code=401, detail="Incorrect password.")
+    if replacement:
+        users_col().update_one(
+            {"user_id": body.user_id}, {"$set": {"password_hash": replacement}}
+        )
 
     # Never return password_hash to the frontend
     user.pop("password_hash", None)
+    set_session_cookie(response, body.user_id)
 
     return {"message": "Login successful.", "user": user}
 
 
+@app.get("/api/v1/session")
+def current_session(user: dict = Depends(require_user)):
+    return {"user": user}
+
+
+@app.post("/api/v1/users/logout")
+def logout(request: Request, response: Response):
+    enforce_same_origin(request)
+    clear_session_cookie(response)
+    return {"message": "Logged out."}
+
+
 @app.get("/api/v1/users/{user_id}")
-def get_user(user_id: str):
+def get_user(user_id: str, current_user: dict = Depends(require_user)):
     """
     Get a student's profile.
     Never returns password_hash.
     """
+    if user_id != current_user["user_id"]:
+        raise HTTPException(status_code=403, detail="Cannot access another user")
     user = users_col().find_one(
         {"user_id": user_id},
         {"_id": 0, "password_hash": 0}   # exclude sensitive fields
@@ -441,114 +766,124 @@ def get_user(user_id: str):
 
 
 @app.get("/api/v1/users/{user_id}/projects")
-def get_user_projects(user_id: str):
+def get_user_projects(user_id: str, current_user: dict = Depends(require_user)):
     """
     Get all projects belonging to a specific student.
     Useful for the dashboard — "show only my projects".
     """
-    if not users_col().find_one({"user_id": user_id}):
-        raise HTTPException(status_code=404, detail="User not found.")
+    if user_id != current_user["user_id"]:
+        raise HTTPException(status_code=403, detail="Cannot access another user's projects")
 
-    pipeline = [
-        {"$match": {"user_id": user_id}},
-        {"$sort":  {"created_at": -1}},
-        {
-            "$lookup": {
-                "from":         "deployments",
-                "localField":   "project_id",
-                "foreignField": "project_id",
-                "as":           "deployments",
-                "pipeline": [
-                    {"$sort":  {"deployed_at": -1}},
-                    {"$limit": 1}
-                ]
-            }
-        },
-        {"$unwind": {"path": "$deployments", "preserveNullAndEmptyArrays": True}},
-        {
-            "$project": {
-                "_id":            0,
-                "project_id":     1,
-                "user_id":        1,
-                "project_name":   1,
-                "repo_url":       1,
-                "current_status": 1,
-                "created_at":     1,
-                "deployment_id":  "$deployments.deployment_id",
-                "status":         "$deployments.status",
-                "public_url":     "$deployments.public_url",
-                "error_summary":  "$deployments.error_summary",
-                "port":           "$deployments.port",
-                "deployed_at":    "$deployments.deployed_at"
-            }
-        }
-    ]
-    return list(projects_col().aggregate(pipeline))
+    projects = list(
+        projects_col().find({"user_id": user_id}, {"_id": 0}).sort("created_at", -1)
+    )
+    for project in projects:
+        latest = deployments_col().find_one(
+            {"project_id": project["project_id"]},
+            {"_id": 0},
+            sort=[("deployed_at", -1)],
+        )
+        project["deployments"] = [latest] if latest else []
+    return projects
 
 
 @app.post("/api/v1/projects", response_model=ProjectResponse, status_code=202)
-def create_project(body: ProjectCreate, bg: BackgroundTasks):
-    """
-    Student submits their GitHub repo URL.
-    Verifies the user exists first, then queues the build.
-    Returns 202 immediately — build runs in background.
-    """
-    # Verify user exists before creating project
-    if not users_col().find_one({"user_id": body.user_id}):
-        raise HTTPException(
-            status_code=404,
-            detail="User not found. Please register first."
-        )
+def create_project(
+    body: ProjectCreate,
+    bg: BackgroundTasks,
+    request: Request,
+    user: dict = Depends(require_user),
+):
+    enforce_same_origin(request)
+    now = datetime.now(timezone.utc)
+    project_id = f"proj-{uuid.uuid4().hex[:8]}"
 
-    project_id    = f"proj-{uuid.uuid4().hex[:8]}"
-    deployment_id = f"dep-{uuid.uuid4().hex[:8]}"
-    now           = datetime.now(timezone.utc)
+    if body.github_installation_id is not None or body.github_repo_id is not None:
+        if body.github_installation_id is None or body.github_repo_id is None:
+            raise HTTPException(status_code=400, detail="GitHub installation and repository IDs are both required")
+        connection = github_connections_col().find_one({
+            "user_id": user["user_id"],
+            "installation_id": body.github_installation_id,
+            "status": "active",
+        })
+        installation = github_installations_col().find_one({
+            "installation_id": body.github_installation_id, "status": "active"
+        })
+        if not connection or not installation:
+            raise HTTPException(status_code=403, detail="GitHub installation is not connected")
+        try:
+            github = GitHubAppService(GitHubAppSettings.from_env(require_complete=True))
+            repository = github.verify_repository_access(
+                body.github_installation_id, body.github_repo_id
+            )
+            commit_sha = github.resolve_branch_head(
+                body.github_installation_id,
+                repository["full_name"],
+                body.github_repo_id,
+                body.deploy_branch,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        repo_url = f"https://github.com/{repository['full_name']}.git"
+        github_fields = {
+            "github_repo_id": body.github_repo_id,
+            "github_full_name": repository["full_name"],
+            "github_installation_id": body.github_installation_id,
+            "github_access_status": "active",
+            "auto_deploy": True,
+        }
+    else:
+        if not body.repo_url:
+            raise HTTPException(status_code=400, detail="Select a GitHub App repository")
+        repo_url = body.repo_url
+        commit_sha = resolve_public_branch(repo_url, body.deploy_branch)
+        github_fields = {
+            "github_access_status": "legacy_public",
+            "auto_deploy": False,
+        }
 
-    # Lock ensures port is reserved atomically with the DB insert.
-    # Without this, concurrent requests can grab the same port.
     with _port_lock:
         port = find_free_port()
-        # Insert project document
-        projects_col().insert_one({
-        "project_id":     project_id,
-        "user_id":        body.user_id,
-        "project_name":   body.project_name,
-        "repo_url":       body.repo_url,
-        "env_vars":       body.env_vars,
-        "current_status": "queued",
-        "created_at":     now
-    })
+        project = {
+            "project_id": project_id,
+            "user_id": user["user_id"],
+            "project_name": body.project_name,
+            "repo_url": repo_url,
+            "env_vars": body.env_vars,
+            "port": port,
+            "deploy_branch": body.deploy_branch,
+            "current_status": "queued",
+            "created_at": now,
+            **github_fields,
+        }
+        projects_col().insert_one(project)
 
-        # Insert first deployment document
-        deployments_col().insert_one({
-            "deployment_id": deployment_id,
-            "project_id":    project_id,
-            "repo_url":      body.repo_url,
-            "status":        "queued",
-            "error_summary": None,
-            "public_url":    None,
-            "port":          port,
-            "deployed_at":   now,
-            "updated_at":    now
-        })
-    # lock released here — port is now safely recorded in DB
-
-    bg.add_task(build_and_deploy, deployment_id, project_id, body.repo_url, port, body.env_vars)
+    deployment, _ = queue_deployment(
+        project,
+        commit_sha,
+        body.deploy_branch,
+        "initial",
+        worker=build_and_deploy,
+        background_tasks=bg,
+    )
 
     return {
         "project_id":    project_id,
-        "deployment_id": deployment_id,
-        "message": f"Build queued. Poll /api/v1/deployments/{deployment_id} for status."
+        "deployment_id": deployment["deployment_id"],
+        "message": f"Build queued. Poll /api/v1/deployments/{deployment['deployment_id']} for status."
     }
 
 
 @app.get("/api/v1/projects")
-def list_projects():
+def list_projects(user: dict = Depends(require_user)):
     """
     Returns ALL projects joined with their latest deployment.
     Frontend uses this for the admin view.
     """
     pipeline = [
+        {"$match": {"user_id": user["user_id"]}},
         {"$sort": {"created_at": -1}},
         {
             "$lookup": {
@@ -585,9 +920,9 @@ def list_projects():
 
 
 @app.get("/api/v1/projects/{project_id}")
-def get_project(project_id: str):
+def get_project(project_id: str, user: dict = Depends(require_user)):
     project = projects_col().find_one(
-        {"project_id": project_id},
+        {"project_id": project_id, "user_id": user["user_id"]},
         {"_id": 0}
     )
     if not project:
@@ -603,8 +938,13 @@ def get_project(project_id: str):
 
 
 @app.delete("/api/v1/projects/{project_id}")
-def delete_project(project_id: str):
+def delete_project(
+    project_id: str, request: Request, user: dict = Depends(require_user)
+):
     """Stop and remove the running container for a project."""
+    enforce_same_origin(request)
+    if not projects_col().find_one({"project_id": project_id, "user_id": user["user_id"]}):
+        raise HTTPException(status_code=404, detail="Project not found.")
     result = subprocess.run(
         ["docker", "rm", "-f", project_id],
         capture_output=True, text=True
@@ -625,15 +965,17 @@ def delete_project(project_id: str):
 
 
 @app.delete("/api/v1/tunnels")
-def stop_tunnels_endpoint():
+def stop_tunnels_endpoint(request: Request, user: dict = Depends(require_user)):
+    enforce_same_origin(request)
     stop_all_tunnels()
     return {"message": "All tunnels stopped and tunnel records cleared."}
 
 
 @app.get("/api/v1/deployments/{deployment_id}")
-def get_deployment(deployment_id: str):
+def get_deployment(deployment_id: str, user: dict = Depends(require_user)):
+    owned_project_ids = projects_col().distinct("project_id", {"user_id": user["user_id"]})
     doc = deployments_col().find_one(
-        {"deployment_id": deployment_id},
+        {"deployment_id": deployment_id, "project_id": {"$in": owned_project_ids}},
         {"_id": 0}
     )
     if not doc:
@@ -642,40 +984,42 @@ def get_deployment(deployment_id: str):
 
 
 @app.post("/api/v1/deployments/redeploy/{project_id}")
-def redeploy_project(project_id: str, bg: BackgroundTasks):
-    project = projects_col().find_one({"project_id": project_id})
+def redeploy_project(
+    project_id: str,
+    bg: BackgroundTasks,
+    request: Request,
+    user: dict = Depends(require_user),
+):
+    enforce_same_origin(request)
+    project = projects_col().find_one({"project_id": project_id, "user_id": user["user_id"]})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
 
-    deployment_id = f"dep-{uuid.uuid4().hex[:8]}"
-    now           = datetime.now(timezone.utc)
-
-    # Reuse the same port as the last deployment
-    last = deployments_col().find_one(
-        {"project_id": project_id},
-        sort=[("deployed_at", -1)]
-    )
-    port = last["port"] if last else find_free_port()
-
-    deployments_col().insert_one({
-        "deployment_id": deployment_id,
-        "project_id":    project_id,
-        "repo_url":      project["repo_url"],
-        "status":        "queued",
-        "error_summary": None,
-        "public_url":    None,
-        "port":          port,
-        "deployed_at":   now,
-        "updated_at":    now
-    })
-
-    env_vars = project.get("env_vars", {})
-    bg.add_task(
-        build_and_deploy,
-        deployment_id, project_id, project["repo_url"], port, env_vars
+    branch = project.get("deploy_branch", "main")
+    if project.get("github_installation_id"):
+        try:
+            commit_sha = GitHubAppService(
+                GitHubAppSettings.from_env(require_complete=True)
+            ).resolve_branch_head(
+                project["github_installation_id"],
+                project["github_full_name"],
+                project["github_repo_id"],
+                branch,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+    else:
+        commit_sha = resolve_public_branch(project["repo_url"], branch)
+    deployment, _ = queue_deployment(
+        project,
+        commit_sha,
+        branch,
+        "manual",
+        worker=build_and_deploy,
+        background_tasks=bg,
     )
     return {
-        "deployment_id": deployment_id,
+        "deployment_id": deployment["deployment_id"],
         "message":       "Redeployment triggered."
     }
 
@@ -683,8 +1027,12 @@ class EnvVarsUpdate(BaseModel):
     env_vars: dict[str, str]
 
 @app.put("/api/v1/projects/{project_id}/env")
-def update_env_vars(project_id: str, body: EnvVarsUpdate):
-    project = projects_col().find_one({"project_id": project_id})
+def update_env_vars(
+    project_id: str, body: EnvVarsUpdate, request: Request,
+    user: dict = Depends(require_user),
+):
+    enforce_same_origin(request)
+    project = projects_col().find_one({"project_id": project_id, "user_id": user["user_id"]})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
 
@@ -699,9 +1047,11 @@ def update_env_vars(project_id: str, body: EnvVarsUpdate):
 
 
 @app.get("/api/v1/projects/{project_id}/env")
-def get_env_vars(project_id: str):
+def get_env_vars(project_id: str, user: dict = Depends(require_user)):
     """Get current env vars for a project (for the frontend to display)."""
-    project = projects_col().find_one({"project_id": project_id}, {"_id": 0})
+    project = projects_col().find_one(
+        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     return {"env_vars": project.get("env_vars", {})}
@@ -720,3 +1070,25 @@ def health():
         "version": app.version,
         "mongodb": db_status
     }
+
+
+@app.get("/api/v1/sonarqube/health")
+async def sonarqube_health():
+    """Report SonarQube readiness without exposing configuration or credentials."""
+    try:
+        settings = SonarSettings.from_env()
+    except ValueError:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "unavailable", "sonarqube": "CONFIGURATION_ERROR"},
+        ) from None
+    result = await asyncio.to_thread(SonarQubeService(settings).check_health)
+    if not result["available"]:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "unavailable", "sonarqube": result["status"]},
+        )
+    return {"status": "ok", "sonarqube": result["status"]}
+
+
+app.include_router(create_github_router(build_and_deploy))

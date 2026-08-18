@@ -7,6 +7,7 @@ import { useAuth } from "@/context/AuthContext";
 import Navbar from "@/components/Navbar";
 import StatusBadge from "@/components/StatusBadge";
 import DeploymentHistory from "@/components/DeploymentHistory";
+import SecurityScanPanel from "@/components/SecurityScanPanel";
 import {
   getProject,
   getDeployment,
@@ -22,6 +23,7 @@ import {
 const STAGES: DeploymentStatus[] = [
   "queued",
   "cloning",
+  "security_scan_running",
   "building",
   "starting",
   "running",
@@ -30,6 +32,7 @@ const STAGES: DeploymentStatus[] = [
 const STAGE_LABELS: Record<string, string> = {
   queued: "Queued",
   cloning: "Cloning",
+  security_scan_running: "Security Scan",
   building: "Building",
   starting: "Starting",
   running: "Running",
@@ -38,20 +41,28 @@ const STAGE_LABELS: Record<string, string> = {
 const POLLING_STATUSES: DeploymentStatus[] = [
   "queued",
   "cloning",
+  "security_scan_running",
+  "security_scan_passed",
   "building",
   "starting",
 ];
 
 function Pipeline({ status }: { status: DeploymentStatus }) {
-  const currentIdx = STAGES.indexOf(status);
-  const failed = status === "failed";
+  const normalizedStatus = status === "security_scan_passed" ? "building" : status;
+  const currentIdx = STAGES.indexOf(normalizedStatus);
+  const securityFailed =
+    status === "security_scan_failed" || status === "security_scan_error";
+  const failed = status === "failed" || securityFailed;
+  const failedIdx = securityFailed
+    ? STAGES.indexOf("security_scan_running")
+    : Math.max(currentIdx, 0);
 
   return (
     <div className="flex items-center gap-0 overflow-x-auto py-2">
       {STAGES.map((stage, idx) => {
-        const isDone = !failed && currentIdx > idx;
-        const isCurrent = currentIdx === idx;
-        const isFailed = failed && idx <= (currentIdx >= 0 ? currentIdx : 0);
+        const isDone = idx < (failed ? failedIdx : currentIdx);
+        const isCurrent = !failed && currentIdx === idx;
+        const isFailed = failed && idx === failedIdx;
 
         return (
           <div key={stage} className="flex items-center">
@@ -89,7 +100,9 @@ function Pipeline({ status }: { status: DeploymentStatus }) {
             {idx < STAGES.length - 1 && (
               <div
                 className={`h-0.5 w-8 sm:w-12 mb-5 shrink-0 transition-all ${
-                  !failed && currentIdx > idx ? "bg-green-500/60" : "bg-[#2a2a2a]"
+                  (failed ? failedIdx : currentIdx) > idx
+                    ? "bg-green-500/60"
+                    : "bg-[#2a2a2a]"
                 }`}
               />
             )}
@@ -147,7 +160,7 @@ function DeleteModal({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ProjectDetailPage() {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const router = useRouter();
   const params = useParams();
   const projectId = params.id as string;
@@ -165,8 +178,8 @@ export default function ProjectDetailPage() {
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    if (!user) router.replace("/");
-  }, [user, router]);
+    if (!authLoading && !user) router.replace("/");
+  }, [user, authLoading, router]);
 
   const stopPolling = useCallback(() => {
     if (intervalRef.current) {
@@ -182,7 +195,12 @@ export default function ProjectDetailPage() {
         try {
           const d = await getDeployment(deploymentId);
           setLatestDeployment(d);
-          if (d.status === "running" || d.status === "failed") {
+          if (
+            d.status === "running" ||
+            d.status === "failed" ||
+            d.status === "security_scan_failed" ||
+            d.status === "security_scan_error"
+          ) {
             stopPolling();
             // Refresh full project to get updated deployments list
             getProject(projectId).then(setProject).catch(() => {});
@@ -250,7 +268,7 @@ export default function ProjectDetailPage() {
     }
   }
 
-  if (!user) return null;
+  if (authLoading || !user) return null;
 
   return (
     <div className="min-h-screen bg-[#0d0d0d]">
@@ -353,6 +371,8 @@ export default function ProjectDetailPage() {
                 </h2>
 
                 <Pipeline status={latestDeployment.status} />
+
+                <SecurityScanPanel deployment={latestDeployment} />
 
                 {/* Running state */}
                 {latestDeployment.status === "running" &&
