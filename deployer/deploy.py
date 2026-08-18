@@ -117,6 +117,19 @@ def deploy_application(user_config: Dict[str, Any]):
     utils.create_from_dict(k3s_client, data=manifest_as_list)
 
 
+def redeploy_application(user_config: Dict[str, Any]):
+    # user_config["image"] = f"{user_config['app_name']}-{user_config['namespace']}-build:latest"
+    # manifest_builder = PaaSManifestBuilder(config=user_config)
+
+    # manifest_as_list = manifest_builder.build_all_listed()
+    # utils.replace_from_dict(k3s_client, data=manifest_as_list)
+    pass
+
+def rollback_application(user_config: Dict[str, Any]):
+    # Implement rollback logic here
+    print("Rollback functionality is not yet implemented.")
+
+
 if __name__ == "__main__":
     # take command line input and decide whethere to build image or deploy application, write it yourself
     
