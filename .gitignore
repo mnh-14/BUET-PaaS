@@ -1,2 +1,10 @@
 database/*
 !database/plan.txt
+
+# Local secret files for cluster bootstrapping
+.env
+**/.env
+service-config/.env
+service-config/*.sh
+service-config/*.local.yaml
+service-config/*.secret.yaml

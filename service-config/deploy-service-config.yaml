@@ -1,0 +1,110 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: paas-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: paas-deployer
+  namespace: paas-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: paas-deployer-cluster-role
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "services", "pods", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: paas-deployer-binding
+subjects:
+  - kind: ServiceAccount
+    name: paas-deployer
+    namespace: paas-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: paas-deployer-cluster-role
+---
+# The real secret values are injected separately via a local .env + shell script,
+# so they are not committed into Git or the repo manifest.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: paas-deployer
+  namespace: paas-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: paas-deployer
+  template:
+    metadata:
+      labels:
+        app: paas-deployer
+    spec:
+      serviceAccountName: paas-deployer
+      containers:
+        - name: paas-deployer
+          image: buet-paas-deployer:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5000
+              name: http
+          envFrom:
+            - secretRef:
+                name: paas-deployer-env
+          env:
+            - name: PORT
+              value: "5000"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: paas-deployer
+  namespace: paas-system
+spec:
+  selector:
+    app: paas-deployer
+  ports:
+    - name: http
+      port: 80
+      targetPort: 5000
+      protocol: TCP
+  type: ClusterIP
