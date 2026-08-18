@@ -11,11 +11,14 @@ import SecurityScanPanel from "@/components/SecurityScanPanel";
 import {
   getProject,
   getDeployment,
+  checkProjectUpdate,
+  subscribeToDeployment,
   deleteProject,
   redeployProject,
   Project,
   Deployment,
   DeploymentStatus,
+  UpdateCheck,
 } from "@/lib/api";
 
 // ─── Pipeline ─────────────────────────────────────────────────────────────────
@@ -25,7 +28,7 @@ const STAGES: DeploymentStatus[] = [
   "cloning",
   "security_scan_running",
   "building",
-  "starting",
+  "deploying",
   "running",
 ];
 
@@ -34,21 +37,28 @@ const STAGE_LABELS: Record<string, string> = {
   cloning: "Cloning",
   security_scan_running: "Security Scan",
   building: "Building",
-  starting: "Starting",
+  deploying: "Deploying",
   running: "Running",
 };
 
-const POLLING_STATUSES: DeploymentStatus[] = [
+const ACTIVE_STATUSES: DeploymentStatus[] = [
   "queued",
   "cloning",
   "security_scan_running",
   "security_scan_passed",
+  "submitting_build",
   "building",
-  "starting",
+  "deploying",
+  "waiting_for_pods",
 ];
 
 function Pipeline({ status }: { status: DeploymentStatus }) {
-  const normalizedStatus = status === "security_scan_passed" ? "building" : status;
+  const normalizedStatus =
+    status === "security_scan_passed" || status === "submitting_build"
+      ? "building"
+      : status === "waiting_for_pods"
+        ? "deploying"
+        : status;
   const currentIdx = STAGES.indexOf(normalizedStatus);
   const securityFailed =
     status === "security_scan_failed" || status === "security_scan_error";
@@ -174,43 +184,38 @@ export default function ProjectDetailPage() {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [redeployLoading, setRedeployLoading] = useState(false);
   const [actionError, setActionError] = useState("");
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheck | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
 
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
     if (!authLoading && !user) router.replace("/");
   }, [user, authLoading, router]);
 
-  const stopPolling = useCallback(() => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
+  const stopEvents = useCallback(() => {
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
   }, []);
 
-  const startPolling = useCallback(
+  const startEvents = useCallback(
     (deploymentId: string) => {
-      stopPolling();
-      intervalRef.current = setInterval(async () => {
-        try {
-          const d = await getDeployment(deploymentId);
-          setLatestDeployment(d);
-          if (
-            d.status === "running" ||
-            d.status === "failed" ||
-            d.status === "security_scan_failed" ||
-            d.status === "security_scan_error"
-          ) {
-            stopPolling();
-            // Refresh full project to get updated deployments list
+      stopEvents();
+      eventSourceRef.current = subscribeToDeployment(
+        deploymentId,
+        (deployment) => {
+          setLatestDeployment(deployment);
+          if (!ACTIVE_STATUSES.includes(deployment.status)) {
+            stopEvents();
             getProject(projectId).then(setProject).catch(() => {});
           }
-        } catch {
-          /* ignore poll errors */
-        }
-      }, 3000);
+        },
+        () => {
+          getDeployment(deploymentId).then(setLatestDeployment).catch(() => {});
+        },
+      );
     },
-    [stopPolling, projectId]
+    [stopEvents, projectId]
   );
 
   // Initial load
@@ -223,17 +228,36 @@ export default function ProjectDetailPage() {
         const latest = p.deployments?.[0] ?? null;
         setLatestDeployment(latest);
 
-        if (latest && POLLING_STATUSES.includes(latest.status)) {
-          startPolling(latest.deployment_id);
+        if (latest && ACTIVE_STATUSES.includes(latest.status)) {
+          startEvents(latest.deployment_id);
         }
+        setCheckingUpdate(true);
+        checkProjectUpdate(projectId)
+          .then(setUpdateCheck)
+          .catch((err: unknown) =>
+            setActionError(err instanceof Error ? err.message : "Could not check GitHub")
+          )
+          .finally(() => setCheckingUpdate(false));
       })
       .catch((err: unknown) =>
         setError(err instanceof Error ? err.message : "Failed to load project")
       )
       .finally(() => setLoading(false));
 
-    return () => stopPolling();
-  }, [user, projectId, startPolling, stopPolling]);
+    return () => stopEvents();
+  }, [user, projectId, startEvents, stopEvents]);
+
+  async function handleCheckUpdate() {
+    setCheckingUpdate(true);
+    setActionError("");
+    try {
+      setUpdateCheck(await checkProjectUpdate(projectId));
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : "Could not check GitHub");
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }
 
   async function handleDelete() {
     setDeleteLoading(true);
@@ -252,7 +276,6 @@ export default function ProjectDetailPage() {
     setRedeployLoading(true);
     try {
       const data = await redeployProject(projectId);
-      // Start polling the new deployment
       const newDeploy: Deployment = {
         deployment_id: data.deployment_id,
         project_id: projectId,
@@ -260,7 +283,8 @@ export default function ProjectDetailPage() {
         deployed_at: new Date().toISOString(),
       };
       setLatestDeployment(newDeploy);
-      startPolling(data.deployment_id);
+      setUpdateCheck((current) => current ? { ...current, latest_remote_sha: data.commit_sha } : current);
+      startEvents(data.deployment_id);
     } catch (err: unknown) {
       setActionError(err instanceof Error ? err.message : "Failed to redeploy");
     } finally {
@@ -269,6 +293,10 @@ export default function ProjectDetailPage() {
   }
 
   if (authLoading || !user) return null;
+  const deploymentActive = latestDeployment
+    ? ACTIVE_STATUSES.includes(latestDeployment.status)
+    : false;
+  const canDeploy = Boolean(updateCheck?.update_available) && !deploymentActive;
 
   return (
     <div className="min-h-screen bg-[#0d0d0d]">
@@ -336,16 +364,28 @@ export default function ProjectDetailPage() {
                   <p className="text-xs text-gray-600 mt-1">
                     Created {new Date(project.created_at).toLocaleDateString()}
                   </p>
+                  <div className="mt-3 text-xs font-mono text-gray-500 space-y-1">
+                    <p>Branch: <span className="text-gray-300">{project.deploy_branch}</span></p>
+                    <p>Deployed: <span className="text-gray-300">{updateCheck?.last_deployed_sha?.slice(0, 8) ?? "Never"}</span></p>
+                    <p>Latest: <span className="text-gray-300">{updateCheck?.latest_remote_sha?.slice(0, 8) ?? "Checking…"}</span></p>
+                  </div>
                 </div>
 
                 {/* Action buttons */}
                 <div className="flex items-center gap-2 shrink-0">
                   <button
                     onClick={handleRedeploy}
-                    disabled={redeployLoading}
+                    disabled={redeployLoading || checkingUpdate || !canDeploy}
                     className="text-sm font-mono px-4 py-2 rounded-xl border border-[#c8f135]/30 text-[#c8f135] hover:bg-[#c8f135]/10 transition-colors disabled:opacity-50"
                   >
-                    {redeployLoading ? "…" : "↺ Redeploy"}
+                    {redeployLoading ? "Starting…" : "Deploy latest commit"}
+                  </button>
+                  <button
+                    onClick={handleCheckUpdate}
+                    disabled={checkingUpdate || deploymentActive}
+                    className="text-sm font-mono px-4 py-2 rounded-xl border border-[#333] text-gray-300 hover:border-[#555] transition-colors disabled:opacity-50"
+                  >
+                    {checkingUpdate ? "Checking…" : "Check updates"}
                   </button>
                   <button
                     onClick={() => { setActionError(""); setShowDeleteModal(true); }}
@@ -418,10 +458,10 @@ export default function ProjectDetailPage() {
                 )}
 
                 {/* In-progress state */}
-                {POLLING_STATUSES.includes(latestDeployment.status) && (
+                {ACTIVE_STATUSES.includes(latestDeployment.status) && (
                   <div className="mt-4 flex items-center gap-2 text-xs text-gray-500">
                     <span className="w-3 h-3 border-2 border-gray-600 border-t-[#c8f135] rounded-full animate-spin" />
-                    Updating every 3 seconds…
+                    Receiving live deployment updates…
                   </div>
                 )}
               </div>

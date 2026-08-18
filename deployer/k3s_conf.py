@@ -404,10 +404,17 @@ class JobPipelineBuilder:
         self.priority_class_name = BUILD_PRIORITY
         self.ttl_after_finished = TTL_AFTER_FINISHED
 
-    def apply_git_cloner(self, git_url: str, branch: str = "main") -> "JobPipelineBuilder":
+    def apply_git_cloner(
+        self,
+        git_url: str,
+        branch: str = "main",
+        github_secret_name: str | None = None,
+    ) -> "JobPipelineBuilder":
         self._script_list.append("/usr/local/bin/clone-git.sh")
         self._env_vars["GIT_URL"] = git_url
         self._env_vars["GIT_BRANCH"] = branch
+        if github_secret_name:
+            self._github_secret_name = github_secret_name
         return self
 
     def apply_trivy_scan(self, severity: str = "CRITICAL,HIGH", fail_on_cve: bool = True) -> "JobPipelineBuilder":
@@ -437,6 +444,26 @@ class JobPipelineBuilder:
 
         multiline_script_block = "\n".join(self._script_list)
 
+        container = {
+            "name": "paas-builder",
+            "image": self.builder_image,
+            "command": ["/bin/bash", "-e", "-c"],
+            "args": [multiline_script_block],
+            "env": [{"name": k, "value": str(v)} for k, v in self._env_vars.items()],
+            "resources": {
+                "requests": {"cpu": "250m", "memory": "512Mi"},
+                "limits": {"cpu": "1000m", "memory": "1.5Gi"},
+            },
+        }
+        github_secret_name = getattr(self, "_github_secret_name", None)
+        if github_secret_name:
+            container["env"].append({
+                "name": "GITHUB_TOKEN",
+                "valueFrom": {
+                    "secretKeyRef": {"name": github_secret_name, "key": "token"}
+                },
+            })
+
         return {
             "apiVersion": "batch/v1",
             "kind": "Job",
@@ -456,23 +483,7 @@ class JobPipelineBuilder:
                     "spec": {
                         "priorityClassName": self.priority_class_name,
                         "restartPolicy": "Never",
-                        "containers": [{
-                            "name": "paas-builder",
-                            "image": self.builder_image,
-                            "command": ["/bin/bash", "-e", "-c"],
-                            "args": [multiline_script_block],
-                            "env": [{"name": k, "value": str(v)} for k, v in self._env_vars.items()],
-                            "resources": {
-                                "requests": {
-                                    "cpu": "250m",
-                                    "memory": "512Mi"
-                                },
-                                "limits": {
-                                    "cpu": "1000m",
-                                    "memory": "1.5Gi"
-                                }
-                            }
-                        }]
+                        "containers": [container]
                     }
                 }
             }

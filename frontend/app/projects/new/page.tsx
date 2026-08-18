@@ -14,6 +14,7 @@ import {
   GitHubBranch,
   GitHubInstallation,
   GitHubRepository,
+  InstanceSize,
 } from "@/lib/api";
 
 interface EnvRow { id: string; key: string; value: string }
@@ -28,6 +29,7 @@ export default function NewProjectPage() {
   const [repositoryId, setRepositoryId] = useState("");
   const [branch, setBranch] = useState("");
   const [projectName, setProjectName] = useState("");
+  const [instanceSize, setInstanceSize] = useState<InstanceSize>("small");
   const [envRows, setEnvRows] = useState<EnvRow[]>([newRow()]);
   const [loading, setLoading] = useState(true);
   const [branchLoading, setBranchLoading] = useState(false);
@@ -99,6 +101,7 @@ export default function NewProjectPage() {
         github_repo_id: selected.id,
         deploy_branch: branch,
         project_name: projectName,
+        instance_size: instanceSize,
         env_vars,
       });
       router.push(`/projects/${result.project_id}`);
@@ -178,6 +181,31 @@ export default function NewProjectPage() {
               </div>
 
               <div>
+                <label className="block text-xs font-mono text-gray-400 mb-2">Deployment size</label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {([
+                    ["small", "Small", "1 pod · 0.25 CPU · 256 MiB"],
+                    ["medium", "Medium", "2 pods · 0.5 CPU · 512 MiB"],
+                    ["large", "Large", "2 pods · 1 CPU · 1 GiB"],
+                  ] as const).map(([value, label, detail]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setInstanceSize(value)}
+                      className={`rounded-xl border p-3 text-left transition-colors ${
+                        instanceSize === value
+                          ? "border-[#c8f135]/70 bg-[#c8f135]/10"
+                          : "border-[#2a2a2a] bg-[#111] hover:border-[#444]"
+                      }`}
+                    >
+                      <span className="block text-sm font-mono text-white">{label}</span>
+                      <span className="block text-[10px] text-gray-500 mt-1">{detail}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
                 <div className="flex justify-between items-center mb-2">
                   <label className="text-xs font-mono text-gray-400">Environment variables</label>
                   <button type="button" onClick={() => setEnvRows((rows) => [...rows, newRow()])} className="text-xs text-[#c8f135]">+ Add variable</button>
@@ -194,7 +222,7 @@ export default function NewProjectPage() {
               </div>
 
               <button type="submit" disabled={!selected || !branch || submitting} className="w-full bg-[#c8f135] text-black font-mono font-bold py-2.5 rounded-lg disabled:opacity-50">
-                {submitting ? "Queuing exact commit…" : "Deploy Project →"}
+                {submitting ? "Creating project…" : "Create Project →"}
               </button>
             </form>
           )}

@@ -5,15 +5,17 @@ BUET-PaaS is a prototype Platform-as-a-Service environment with:
 - A Next.js frontend
 - A Python/FastAPI backend
 - A MongoDB database
-- One central GitHub App webhook supporting authorized public and private repositories
+- A GitHub App supporting authorized public and private repositories
+- SonarQube quality-gate enforcement
+- Kubernetes build and deployment orchestration
 
 This README covers running the frontend and MongoDB using Docker. For backend setup and execution, follow the backend documentation in `backend/readme.md`.
 
-## GitHub App deployment flow
+## Deployment flow
 
-Students authenticate to BUET-PaaS, install the shared GitHub App, select an authorized repository and branch, and deploy an exact commit. Future pushes arrive through one signed endpoint, `/api/v1/github/webhook`. The backend generates short-lived installation tokens only when calling GitHub or cloning a private repository; tokens never reach the frontend or MongoDB.
+Students authenticate to BUET-PaaS, install the shared GitHub App, and create a project from an authorized repository and branch. The project page checks the branch head on demand and enables the manual deploy button when it differs from the last successfully deployed commit.
 
-The former 30-second GitHub poller is deprecated and is not part of normal startup. See `backend/readme.md` for GitHub App settings, Cloudflare Quick/Named Tunnel ingress, environment variables, secret rules, testing, and troubleshooting.
+The backend clones the selected source for SonarQube analysis, then submits the existing Kubernetes build/deploy manifests. It watches Kubernetes Jobs and Deployments through the native Watch API, persists status and the final Ingress URL in MongoDB, and streams changes to the frontend with SSE. Private clones use temporary GitHub App token Secrets. There is no webhook auto-deployment, continuous commit poller, local application Docker execution, or Cloudflare application tunnel.
 
 ## Prerequisites
 

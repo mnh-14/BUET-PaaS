@@ -6,23 +6,22 @@
 
 import os
 import stat
-import hashlib
 import asyncio
 import shutil
 import subprocess
 import threading
-import time
 import uuid
 import re
-import socket
 import tempfile
+import json
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, Field
+from typing import Literal
 
 from auth import (
     clear_session_cookie,
@@ -34,6 +33,12 @@ from auth import (
 )
 from config import GitHubAppSettings, SonarSettings
 from deployment_service import queue_deployment
+from deployment_config import (
+    DEFAULT_CONTAINER_PORT as KUBERNETES_DEFAULT_CONTAINER_PORT,
+    build_deployer_config,
+    kubernetes_name,
+)
+from kubernetes_service import KubernetesService
 from github_app import GitHubAppService
 from github_routes import create_github_router
 from services.sonarqube_service import (
@@ -41,12 +46,10 @@ from services.sonarqube_service import (
     SonarQubeService,
 )
 
-import tunnel
 from db import (
     users_col,
     projects_col,
     deployments_col,
-    tunnels_col,
     github_connections_col,
     github_installations_col,
     init_indexes,
@@ -62,15 +65,9 @@ def safe_rmtree(path: str):
     if os.path.exists(path):
         shutil.rmtree(path, onexc=_force_remove_readonly)
 
-PORT_START      = 9000
-PORT_END        = 9999
-PACK_BUILDER    = "paketobuildpacks/builder-jammy-base"
-DEFAULT_CONTAINER_PORT = 3000  
-# tunnel.CLOUDFLARED_EXECUTABLE= "paketobuildpacks/builder-jammy-base"
-DOCKER_NETWORK = "BUET-PaaS-network-v1.0"  # ensure this Docker network exists
+DEFAULT_CONTAINER_PORT = KUBERNETES_DEFAULT_CONTAINER_PORT
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 
-_port_lock = threading.Lock()
 _project_locks: dict[str, threading.Lock] = {}
 _project_locks_mutex = threading.Lock()
 
@@ -81,93 +78,6 @@ def get_project_lock(project_id: str) -> threading.Lock:
         if project_id not in _project_locks:
             _project_locks[project_id] = threading.Lock()
         return _project_locks[project_id]
-
-
-def find_free_port() -> int:
-    """Returns the lowest port in 9000–9999 not used by a running container."""
-    used = {
-        doc["port"]
-        for doc in deployments_col().find(
-            {"status": {"$in": [
-                "queued", "cloning", "security_scan_running",
-                "security_scan_passed", "building", "starting", "running"
-            ]},
-             "port": {"$exists": True}},
-            {"port": 1}
-        )
-    }
-    for port in range(PORT_START, PORT_END + 1):
-        if port not in used:
-            return port
-    raise RuntimeError("All ports 9000–9999 are occupied.")
-
-
-def pack_available() -> bool:
-    return shutil.which("pack") is not None
-
-
-def get_or_create_tunnel(port: int, project_id: str) -> str:
-    """
-    Returns a public Cloudflare tunnel URL for the given host port.
-    Logic:
-      1. Check tunnels collection — if a tunnel already exists for this
-         port, reuse its URL (no need to open a new one)
-      2. If not, call cloudflared to open a new tunnel, store URL in DB
-      3. If CLOUDFLARED_PATH is not set, fall back to localhost URL
-    """
-    if not tunnel.CLOUDFLARED_EXECUTABLE:
-        return f"http://localhost:{port}"
-
-    # Check if tunnel already exists for this port
-    existing = tunnels_col().find_one({"port": port})
-    if existing:
-        print(f"  [TUNNEL] Reusing existing tunnel for port {port}: {existing['tunnel_url']}")
-        return existing["tunnel_url"]
-
-    # Open a new tunnel by importing and calling tunnel.py's start_tunnel
-    try:
-        # import importlib.util, sys as _sys
-        # tunnel_path = os.path.join(os.path.dirname(__file__), "tunnel.py")
-        # spec = importlib.util.spec_from_file_location("tunnel", tunnel_path)
-        # tunnel_mod = importlib.util.module_from_spec(spec)
-        # spec.loader.exec_module(tunnel_mod)
-        # tunnel_mod.CLOUDFLARED_EXECUTABLE = CLOUDFLARED_PATH
-        # # spec.loader.exec_module(tunnel_mod)
-
-        tunnel_url = tunnel.start_tunnel(f"localhost:{port}")
-
-        if tunnel_url:
-            tunnels_col().insert_one({
-                "port":       port,
-                "tunnel_url": tunnel_url,
-                "project_id": project_id,
-                "created_at": datetime.now(timezone.utc)
-            })
-            print(f"  [TUNNEL] New tunnel for port {port}: {tunnel_url}")
-            return tunnel_url
-        else:
-            print(f"  [TUNNEL] Failed to create tunnel — falling back to localhost")
-            return f"http://localhost:{port}"
-
-    except Exception as e:
-        print(f"  [TUNNEL] Error creating tunnel: {e} — falling back to localhost")
-        return f"http://localhost:{port}"
-
-
-def stop_all_tunnels():
-    """
-    Stops all running cloudflared tunnels and clears the tunnels collection.
-    Called when a project is deleted or all projects are stopped.
-    """
-    if not tunnel.CLOUDFLARED_EXECUTABLE:
-        return
-
-    try:
-        tunnel.stop_tunnels()
-        tunnels_col().delete_many({})
-        print("  [TUNNEL] All tunnels stopped and collection cleared.")
-    except Exception as e:
-        print(f"  [TUNNEL] Error stopping tunnels: {e}")
 
 
 def parse_expose_port(dockerfile_dir: str) -> int:
@@ -218,38 +128,6 @@ def find_dockerfile(work_dir: str) -> str | None:
             return root
 
     return None
-
-
-def wait_for_container_ready(project_id: str, port: int, timeout: int = 30) -> None:
-    """Require the container to stay alive and accept TCP before publishing a URL."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        inspection = subprocess.run(
-            [
-                "docker", "inspect", "--format",
-                "{{.State.Running}} {{.State.Status}} {{.State.ExitCode}}",
-                project_id,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            shell=False,
-        )
-        state = inspection.stdout.strip().lower()
-        if inspection.returncode != 0 or not state.startswith("true "):
-            raise RuntimeError(
-                "Container exited before becoming ready. Check the container logs."
-            )
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=1):
-                return
-        except OSError:
-            time.sleep(1)
-
-    raise RuntimeError(
-        f"Container is running but did not accept connections on host port {port} "
-        f"within {timeout} seconds. Verify the Dockerfile EXPOSE port."
-    )
 
 
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -392,7 +270,7 @@ def build_and_deploy(
     deployment_id: str,
     project_id: str,
     repo_url: str,
-    port: int,
+    port: int | None = None,
     env_vars: dict | None = None,
     expected_commit_sha: str | None = None,
     project_name: str | None = None,
@@ -402,18 +280,39 @@ def build_and_deploy(
     branch: str = "main",
 ):
     work_dir  = f"/tmp/buetpaas_{deployment_id}"
-    image_tag = f"buetpaas/{project_id}:latest"
+    current_stage = "queued"
 
     def set_status(status: str, error: str = None, url: str = None):
         """Updates deployment document and parent project status."""
+        nonlocal current_stage
+        previous_stage = current_stage
+        current_stage = status
+        messages = {
+            "cloning": "Fetching source from GitHub",
+            "security_scan_running": "Running the SonarQube quality gate",
+            "security_scan_passed": "Security quality gate passed",
+            "submitting_build": "Submitting the Kubernetes build Job",
+            "building": "Kubernetes is building and pushing the image",
+            "deploying": "Applying the Kubernetes application manifests",
+            "waiting_for_pods": "Waiting for application Pods to become ready",
+            "running": "Deployment is live",
+            "failed": "Deployment failed",
+            "security_scan_failed": "Security quality gate failed",
+            "security_scan_error": "Security scan could not complete",
+        }
+        fields = {
+            "status": status,
+            "current_stage": status,
+            "status_message": messages.get(status, status.replace("_", " ").title()),
+            "error_summary": error,
+            "public_url": url,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if status in {"failed", "security_scan_failed", "security_scan_error"}:
+            fields["failed_stage"] = previous_stage
         deployments_col().update_one(
             {"deployment_id": deployment_id},
-            {"$set": {
-                "status":        status,
-                "error_summary": error,
-                "public_url":    url,
-                "updated_at":    datetime.now(timezone.utc)
-            }}
+            {"$set": fields}
         )
         projects_col().update_one(
             {"project_id": project_id},
@@ -450,7 +349,7 @@ def build_and_deploy(
         )
         projects_col().update_one(
             {"project_id": project_id},
-            {"$set": {"last_deployed_sha": commit_sha, "deploy_branch": branch}},
+            {"$set": {"deploy_branch": branch}},
         )
 
         try:
@@ -530,67 +429,98 @@ def build_and_deploy(
                 error=None,
             )
 
-        set_status("building")
-
-        if pack_available():
-            print(f"  [{deployment_id[:8]}] Using pack build (CNB)")
-            r = subprocess.run(
-                ["pack", "build", image_tag,
-                 "--path", work_dir,
-                 "--builder", PACK_BUILDER],
-                capture_output=True, text=True, timeout=600
-            )
-            if r.returncode != 0:
-                raise RuntimeError(f"pack build failed:\n\n{r.stderr.strip()}")
-
-        else:
-            dockerfile_dir = find_dockerfile(work_dir)
-            if dockerfile_dir:
-                print(f"  [{deployment_id[:8]}] Using docker build")
-                r = subprocess.run(
-                    ["docker", "build", "-t", image_tag, dockerfile_dir],
-                    capture_output=True, text=True, timeout=300
-                )
-                if r.returncode != 0:
-                    raise RuntimeError(f"docker build failed:\n\n{r.stderr.strip()}")
-            else:
-                raise RuntimeError(
-                    "No Dockerfile found anywhere in the repo and pack CLI is not installed.\n\n"
-                    "Fix: add a Dockerfile to your repo (root or a subfolder like server/, app/, backend/).\n"
-                    "The Dockerfile must have an EXPOSE instruction (e.g. EXPOSE 8000)."
-                )
-
-        # ── 3. Detect container port from Dockerfile ────────────
         dockerfile_dir = find_dockerfile(work_dir)
-        container_port = parse_expose_port(dockerfile_dir) if dockerfile_dir else DEFAULT_CONTAINER_PORT
-        subprocess.run(["docker", "stop", project_id], capture_output=True)
-        subprocess.run(["docker", "rm",   project_id], capture_output=True)
-        time.sleep(1)   # give OS time to release the port binding
-
-        # ── 5. Run ──────────────────────────────────────────────
-        set_status("starting")
-        # Build docker run command — inject env vars if provided
-        docker_cmd = [
-            "docker", "run", "-d",
-            "--name", project_id,
-            "--network", DOCKER_NETWORK,    # ensure container is on the same network as other containers
-            "-p", f"{port}:{container_port}",
-            "--restart", "unless-stopped",
-        ]
-        if env_vars:
-            for key, value in env_vars.items():
-                docker_cmd += ["-e", f"{key}={value}"]
-        docker_cmd.append(image_tag)
-
-        r = subprocess.run(
-            docker_cmd,
-            capture_output=True, text=True, timeout=30
+        if not dockerfile_dir:
+            raise RuntimeError("No Dockerfile was found in the repository")
+        relative_dir = os.path.relpath(dockerfile_dir, work_dir)
+        dockerfile_path = (
+            "Dockerfile" if relative_dir == "." else f"{relative_dir}/Dockerfile"
         )
-        if r.returncode != 0:
-            raise RuntimeError(f"docker run failed:\n\n{r.stderr.strip()}")
+        container_port = parse_expose_port(dockerfile_dir)
+        if not container_port:
+            container_port = KUBERNETES_DEFAULT_CONTAINER_PORT
+        projects_col().update_one(
+            {"project_id": project_id},
+            {"$set": {
+                "dockerfile_path": dockerfile_path,
+                "container_port": container_port,
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
+        project = projects_col().find_one({"project_id": project_id})
+        deployment = deployments_col().find_one({"deployment_id": deployment_id})
+        if not project or not deployment:
+            raise RuntimeError("Deployment state disappeared before Kubernetes submission")
+        deployer_config = build_deployer_config(project, deployment)
+        resources = {
+            key: deployer_config[key]
+            for key in (
+                "replicas", "cpu_request", "cpu_limit",
+                "memory_request", "memory_limit",
+            )
+        }
+        deployments_col().update_one(
+            {"deployment_id": deployment_id},
+            {"$set": {
+                "dockerfile_path": dockerfile_path,
+                "container_port": container_port,
+                "image_destination": deployer_config["image"],
+                "resources": resources,
+            }},
+        )
 
-        wait_for_container_ready(project_id, port)
-        url = get_or_create_tunnel(port, project_id)
+        set_status("submitting_build")
+        kube = KubernetesService()
+        kube.ensure_namespace(deployer_config["namespace"])
+        github_secret_name = None
+        try:
+            if github_installation_id is not None:
+                token = GitHubAppService(
+                    GitHubAppSettings.from_env(require_complete=True)
+                ).create_installation_token(github_installation_id, github_repo_id)
+                github_secret_name = kube.create_github_secret(
+                    deployer_config["namespace"], deployment_id, token
+                )
+                del token
+            job_name = kube.submit_build(deployer_config, github_secret_name)
+            deployments_col().update_one(
+                {"deployment_id": deployment_id},
+                {"$set": {
+                    "kubernetes.namespace": deployer_config["namespace"],
+                    "kubernetes.build_job_name": job_name,
+                }},
+            )
+            set_status("building")
+            kube.wait_for_build(
+                deployer_config["namespace"],
+                job_name,
+                int(os.getenv("KUBERNETES_BUILD_TIMEOUT", "1800")),
+            )
+        finally:
+            kube.delete_secret(deployer_config["namespace"], github_secret_name)
+
+        set_status("deploying")
+        names = kube.submit_application(deployer_config)
+        deployments_col().update_one(
+            {"deployment_id": deployment_id},
+            {"$set": {f"kubernetes.{key}": value for key, value in names.items()}},
+        )
+        set_status("waiting_for_pods")
+        url = kube.wait_for_application(
+            deployer_config["namespace"],
+            names["deployment_name"],
+            names["ingress_name"],
+            int(os.getenv("KUBERNETES_DEPLOY_TIMEOUT", "600")),
+        )
+        projects_col().update_one(
+            {"project_id": project_id},
+            {"$set": {
+                "last_deployed_sha": commit_sha,
+                "latest_remote_sha": commit_sha,
+                "public_url": url,
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
         set_status("running", url=url)
         print(f"  [{deployment_id[:8]}] ✓ Running at {url}")
 
@@ -600,6 +530,45 @@ def build_and_deploy(
 
       finally:
         safe_rmtree(work_dir)
+
+
+def resume_incomplete_deployments() -> None:
+    """Restart interrupted orchestration from MongoDB after a backend restart."""
+    active_statuses = [
+        "queued", "cloning", "security_scan_running", "security_scan_passed",
+        "submitting_build", "building", "deploying", "waiting_for_pods",
+    ]
+    for deployment in deployments_col().find({"status": {"$in": active_statuses}}):
+        project = projects_col().find_one({"project_id": deployment["project_id"]})
+        if not project:
+            continue
+        deployments_col().update_one(
+            {"deployment_id": deployment["deployment_id"]},
+            {"$set": {
+                "status": "queued",
+                "status_message": "Resuming after backend restart",
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
+        thread = threading.Thread(
+            target=build_and_deploy,
+            args=(
+                deployment["deployment_id"],
+                project["project_id"],
+                project["repo_url"],
+                None,
+                project.get("env_vars", {}),
+                deployment.get("commit_sha"),
+                project.get("project_name"),
+                project.get("github_installation_id"),
+                project.get("github_repo_id"),
+                project.get("github_full_name"),
+                project.get("deploy_branch", "main"),
+            ),
+            daemon=True,
+            name=f"resume-{deployment['deployment_id']}",
+        )
+        thread.start()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -613,6 +582,7 @@ async def lifespan(app: FastAPI):
         )
     init_indexes()
     GitHubAppSettings.from_env(require_complete=True)
+    resume_incomplete_deployments()
     yield
 
 
@@ -650,10 +620,11 @@ class ProjectCreate(BaseModel):
     repo_url: str | None = None
     user_id: str | None = None  # accepted for legacy clients, never trusted
     project_name: str = "my-project"
-    env_vars:     dict[str, str] = {}
+    instance_size: Literal["small", "medium", "large"] = "small"
+    env_vars: dict[str, str] = Field(default_factory=dict)
 class ProjectResponse(BaseModel):
     project_id:    str
-    deployment_id: str
+    deployment_id: str | None = None
     message:       str
 
 
@@ -832,7 +803,6 @@ def create_project(
             "github_full_name": repository["full_name"],
             "github_installation_id": body.github_installation_id,
             "github_access_status": "active",
-            "auto_deploy": True,
         }
     else:
         if not body.repo_url:
@@ -841,38 +811,39 @@ def create_project(
         commit_sha = resolve_public_branch(repo_url, body.deploy_branch)
         github_fields = {
             "github_access_status": "legacy_public",
-            "auto_deploy": False,
         }
 
-    with _port_lock:
-        port = find_free_port()
-        project = {
-            "project_id": project_id,
-            "user_id": user["user_id"],
-            "project_name": body.project_name,
-            "repo_url": repo_url,
-            "env_vars": body.env_vars,
-            "port": port,
-            "deploy_branch": body.deploy_branch,
-            "current_status": "queued",
-            "created_at": now,
-            **github_fields,
-        }
-        projects_col().insert_one(project)
-
-    deployment, _ = queue_deployment(
-        project,
-        commit_sha,
-        body.deploy_branch,
-        "initial",
-        worker=build_and_deploy,
-        background_tasks=bg,
-    )
+    app_name = kubernetes_name(body.project_name)
+    namespace = kubernetes_name(user["user_id"])
+    if projects_col().find_one({"namespace": namespace, "app_name": app_name}):
+        raise HTTPException(
+            status_code=409,
+            detail="A project with this application name already exists",
+        )
+    project = {
+        "project_id": project_id,
+        "user_id": user["user_id"],
+        "project_name": body.project_name,
+        "app_name": app_name,
+        "namespace": namespace,
+        "repo_url": repo_url,
+        "env_vars": body.env_vars,
+        "instance_size": body.instance_size,
+        "deploy_branch": body.deploy_branch,
+        "latest_remote_sha": commit_sha,
+        "last_deployed_sha": None,
+        "last_commit_checked_at": now,
+        "current_status": "not_deployed",
+        "created_at": now,
+        "updated_at": now,
+        **github_fields,
+    }
+    projects_col().insert_one(project)
 
     return {
         "project_id":    project_id,
-        "deployment_id": deployment["deployment_id"],
-        "message": f"Build queued. Poll /api/v1/deployments/{deployment['deployment_id']} for status."
+        "deployment_id": None,
+        "message": "Project created. Deploy the latest commit when ready."
     }
 
 
@@ -911,7 +882,7 @@ def list_projects(user: dict = Depends(require_user)):
                 "status":         "$deployments.status",
                 "public_url":     "$deployments.public_url",
                 "error_summary":  "$deployments.error_summary",
-                "port":           "$deployments.port",
+                "instance_size":  1,
                 "deployed_at":    "$deployments.deployed_at"
             }
         }
@@ -941,14 +912,17 @@ def get_project(project_id: str, user: dict = Depends(require_user)):
 def delete_project(
     project_id: str, request: Request, user: dict = Depends(require_user)
 ):
-    """Stop and remove the running container for a project."""
+    """Remove the Kubernetes resources owned by a project."""
     enforce_same_origin(request)
-    if not projects_col().find_one({"project_id": project_id, "user_id": user["user_id"]}):
-        raise HTTPException(status_code=404, detail="Project not found.")
-    result = subprocess.run(
-        ["docker", "rm", "-f", project_id],
-        capture_output=True, text=True
+    project = projects_col().find_one(
+        {"project_id": project_id, "user_id": user["user_id"]}
     )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    try:
+        KubernetesService().delete_project(project["namespace"], project["app_name"])
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
     deployments_col().update_many(
         {"project_id": project_id},
         {"$set": {"status": "stopped", "public_url": None}}
@@ -957,18 +931,7 @@ def delete_project(
         {"project_id": project_id},
         {"$set": {"current_status": "stopped"}}
     )
-    tunnels_col().delete_many({"project_id": project_id})
-    return {
-        "message":       f"Project {project_id} stopped.",
-        "docker_output": result.stdout
-    }
-
-
-@app.delete("/api/v1/tunnels")
-def stop_tunnels_endpoint(request: Request, user: dict = Depends(require_user)):
-    enforce_same_origin(request)
-    stop_all_tunnels()
-    return {"message": "All tunnels stopped and tunnel records cleared."}
+    return {"message": f"Project {project_id} stopped."}
 
 
 @app.get("/api/v1/deployments/{deployment_id}")
@@ -983,6 +946,92 @@ def get_deployment(deployment_id: str, user: dict = Depends(require_user)):
     return doc
 
 
+@app.get("/api/v1/deployments/{deployment_id}/events")
+async def deployment_events(deployment_id: str, user: dict = Depends(require_user)):
+    project_ids = projects_col().distinct("project_id", {"user_id": user["user_id"]})
+    if not deployments_col().find_one({
+        "deployment_id": deployment_id, "project_id": {"$in": project_ids}
+    }):
+        raise HTTPException(status_code=404, detail="Deployment not found.")
+
+    async def stream():
+        previous = None
+        while True:
+            document = await asyncio.to_thread(
+                deployments_col().find_one,
+                {"deployment_id": deployment_id},
+                {"_id": 0},
+            )
+            if not document:
+                yield "event: error\ndata: {\"detail\":\"Deployment removed\"}\n\n"
+                return
+            payload = json.dumps(document, default=str, separators=(",", ":"))
+            if payload != previous:
+                yield f"data: {payload}\n\n"
+                previous = payload
+            if document.get("status") in {
+                "running", "failed", "security_scan_failed",
+                "security_scan_error", "stopped",
+            }:
+                return
+            yield ": keepalive\n\n"
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def resolve_project_head(project: dict) -> str:
+    branch = project.get("deploy_branch", "main")
+    if project.get("github_installation_id"):
+        return GitHubAppService(
+            GitHubAppSettings.from_env(require_complete=True)
+        ).resolve_branch_head(
+            project["github_installation_id"],
+            project["github_full_name"],
+            project["github_repo_id"],
+            branch,
+        )
+    return resolve_public_branch(project["repo_url"], branch)
+
+
+@app.post("/api/v1/projects/{project_id}/check-update")
+def check_project_update(
+    project_id: str, request: Request, user: dict = Depends(require_user)
+):
+    enforce_same_origin(request)
+    project = projects_col().find_one(
+        {"project_id": project_id, "user_id": user["user_id"]}
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    try:
+        latest = resolve_project_head(project)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    checked_at = datetime.now(timezone.utc)
+    projects_col().update_one(
+        {"project_id": project_id},
+        {"$set": {
+            "latest_remote_sha": latest,
+            "last_commit_checked_at": checked_at,
+            "updated_at": checked_at,
+        }},
+    )
+    deployed = project.get("last_deployed_sha")
+    return {
+        "project_id": project_id,
+        "branch": project.get("deploy_branch", "main"),
+        "last_deployed_sha": deployed,
+        "latest_remote_sha": latest,
+        "update_available": deployed != latest,
+        "checked_at": checked_at,
+    }
+
+
 @app.post("/api/v1/deployments/redeploy/{project_id}")
 def redeploy_project(
     project_id: str,
@@ -995,21 +1044,30 @@ def redeploy_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
 
+    active = deployments_col().find_one({
+        "project_id": project_id,
+        "status": {"$in": [
+            "queued", "cloning", "security_scan_running",
+            "security_scan_passed", "submitting_build", "building",
+            "deploying", "waiting_for_pods",
+        ]},
+    })
+    if active:
+        raise HTTPException(status_code=409, detail="A deployment is already running")
     branch = project.get("deploy_branch", "main")
-    if project.get("github_installation_id"):
-        try:
-            commit_sha = GitHubAppService(
-                GitHubAppSettings.from_env(require_complete=True)
-            ).resolve_branch_head(
-                project["github_installation_id"],
-                project["github_full_name"],
-                project["github_repo_id"],
-                branch,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from None
-    else:
-        commit_sha = resolve_public_branch(project["repo_url"], branch)
+    try:
+        commit_sha = resolve_project_head(project)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    if project.get("last_deployed_sha") == commit_sha:
+        raise HTTPException(status_code=409, detail="The latest commit is already deployed")
+    projects_col().update_one(
+        {"project_id": project_id},
+        {"$set": {
+            "latest_remote_sha": commit_sha,
+            "last_commit_checked_at": datetime.now(timezone.utc),
+        }},
+    )
     deployment, _ = queue_deployment(
         project,
         commit_sha,
@@ -1020,6 +1078,7 @@ def redeploy_project(
     )
     return {
         "deployment_id": deployment["deployment_id"],
+        "commit_sha": commit_sha,
         "message":       "Redeployment triggered."
     }
 
@@ -1091,4 +1150,4 @@ async def sonarqube_health():
     return {"status": "ok", "sonarqube": result["status"]}
 
 
-app.include_router(create_github_router(build_and_deploy))
+app.include_router(create_github_router())

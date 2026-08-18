@@ -28,7 +28,7 @@ export default function DeploymentHistory({
               Status
             </th>
             <th className="text-left py-2.5 px-3 text-xs font-mono text-gray-500 uppercase tracking-wider">
-              Port
+              Size
             </th>
             <th className="text-left py-2.5 px-3 text-xs font-mono text-gray-500 uppercase tracking-wider">
               Deployed At
@@ -55,7 +55,7 @@ export default function DeploymentHistory({
                 <StatusBadge status={d.status} />
               </td>
               <td className="py-2.5 px-3 font-mono text-xs text-gray-400">
-                {d.port ?? "—"}
+                {d.instance_size ?? "—"}
               </td>
               <td className="py-2.5 px-3 text-xs text-gray-400">
                 {new Date(d.deployed_at).toLocaleString()}

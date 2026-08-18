@@ -30,12 +30,20 @@ const statusConfig: Record<
     label: "Scan Error",
     classes: "bg-red-900/50 text-red-300 border border-red-800",
   },
+  submitting_build: {
+    label: "Submitting Build",
+    classes: "bg-amber-900/50 text-amber-300 border border-amber-800",
+  },
   building: {
     label: "Building",
     classes: "bg-amber-900/50 text-amber-300 border border-amber-800",
   },
-  starting: {
-    label: "Starting",
+  deploying: {
+    label: "Deploying",
+    classes: "bg-orange-900/50 text-orange-300 border border-orange-800",
+  },
+  waiting_for_pods: {
+    label: "Starting Pods",
     classes: "bg-orange-900/50 text-orange-300 border border-orange-800",
   },
   running: {

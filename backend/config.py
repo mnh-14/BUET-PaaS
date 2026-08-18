@@ -52,7 +52,6 @@ class GitHubAppSettings:
     client_secret: str
     app_slug: str
     private_key_path: str
-    webhook_secret: str
     callback_url: str
     install_url: str
     frontend_url: str
@@ -66,7 +65,6 @@ class GitHubAppSettings:
             client_secret=os.getenv("GITHUB_APP_CLIENT_SECRET", ""),
             app_slug=os.getenv("GITHUB_APP_SLUG", ""),
             private_key_path=os.getenv("GITHUB_APP_PRIVATE_KEY_PATH", ""),
-            webhook_secret=os.getenv("GITHUB_WEBHOOK_SECRET", ""),
             callback_url=os.getenv("GITHUB_CALLBACK_URL", ""),
             install_url=os.getenv("GITHUB_INSTALL_URL", ""),
             frontend_url=os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/"),
@@ -81,7 +79,6 @@ class GitHubAppSettings:
                     "GITHUB_APP_CLIENT_SECRET": settings.client_secret,
                     "GITHUB_APP_SLUG": settings.app_slug,
                     "GITHUB_APP_PRIVATE_KEY_PATH": settings.private_key_path,
-                    "GITHUB_WEBHOOK_SECRET": settings.webhook_secret,
                     "GITHUB_CALLBACK_URL": settings.callback_url,
                     "SESSION_SECRET": settings.session_secret,
                 }.items()

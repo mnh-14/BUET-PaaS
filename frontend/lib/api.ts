@@ -16,7 +16,11 @@ export interface Deployment {
   deployment_id: string;
   project_id: string;
   status: DeploymentStatus;
-  port?: number;
+  current_stage?: string;
+  status_message?: string;
+  failed_stage?: string;
+  instance_size?: InstanceSize;
+  resources?: DeploymentResources;
   public_url?: string;
   error_summary?: string;
   commit_sha?: string;
@@ -61,8 +65,10 @@ export type DeploymentStatus =
   | "security_scan_passed"
   | "security_scan_failed"
   | "security_scan_error"
+  | "submitting_build"
   | "building"
-  | "starting"
+  | "deploying"
+  | "waiting_for_pods"
   | "running"
   | "failed"
   | "stopped";
@@ -72,6 +78,12 @@ export interface Project {
   user_id: string;
   project_name: string;
   repo_url: string;
+  instance_size: InstanceSize;
+  deploy_branch: string;
+  last_deployed_sha?: string | null;
+  latest_remote_sha?: string | null;
+  last_commit_checked_at?: string | null;
+  current_status?: string;
   created_at: string;
   deployments: Deployment[];
 }
@@ -124,6 +136,16 @@ export async function loginUser(data: {
   return handleResponse(res);
 }
 
+export type InstanceSize = "small" | "medium" | "large";
+
+export interface DeploymentResources {
+  replicas: number;
+  cpu_request: string;
+  cpu_limit: string;
+  memory_request: string;
+  memory_limit: string;
+}
+
 export async function getSession(): Promise<{ user: User }> {
   const res = await apiFetch(`${BASE_URL}/api/v1/session`);
   return handleResponse(res);
@@ -146,8 +168,9 @@ export async function createProject(data: {
   github_repo_id: number;
   deploy_branch: string;
   project_name: string;
+  instance_size: InstanceSize;
   env_vars?: Record<string, string>;
-}): Promise<{ project_id: string; deployment_id: string; message: string }> {
+}): Promise<{ project_id: string; deployment_id?: string | null; message: string }> {
   const res = await apiFetch(`${BASE_URL}/api/v1/projects`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -226,10 +249,40 @@ export async function getDeployment(deployment_id: string): Promise<Deployment> 
 
 export async function redeployProject(
   project_id: string
-): Promise<{ deployment_id: string; message: string }> {
+): Promise<{ deployment_id: string; commit_sha: string; message: string }> {
   const res = await apiFetch(
     `${BASE_URL}/api/v1/deployments/redeploy/${project_id}`,
     { method: "POST" }
   );
   return handleResponse(res);
+}
+
+export interface UpdateCheck {
+  project_id: string;
+  branch: string;
+  last_deployed_sha?: string | null;
+  latest_remote_sha: string;
+  update_available: boolean;
+  checked_at: string;
+}
+
+export async function checkProjectUpdate(projectId: string): Promise<UpdateCheck> {
+  const res = await apiFetch(`${BASE_URL}/api/v1/projects/${projectId}/check-update`, {
+    method: "POST",
+  });
+  return handleResponse(res);
+}
+
+export function subscribeToDeployment(
+  deploymentId: string,
+  onUpdate: (deployment: Deployment) => void,
+  onError?: () => void,
+): EventSource {
+  const source = new EventSource(
+    `${BASE_URL}/api/v1/deployments/${deploymentId}/events`,
+    { withCredentials: true },
+  );
+  source.onmessage = (event) => onUpdate(JSON.parse(event.data) as Deployment);
+  source.onerror = () => onError?.();
+  return source;
 }

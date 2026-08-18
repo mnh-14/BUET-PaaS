@@ -1,17 +1,14 @@
-"""Authenticated GitHub App installation APIs and the single App webhook."""
+"""Authenticated GitHub App installation and repository APIs."""
 
 import hashlib
-import hmac
-import json
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pymongo import ReturnDocument
-from pymongo.errors import DuplicateKeyError
 
 from auth import enforce_same_origin, require_user
 from config import GitHubAppSettings
@@ -19,15 +16,12 @@ from db import (
     github_connections_col,
     github_installations_col,
     github_oauth_states_col,
-    github_webhook_deliveries_col,
     projects_col,
 )
-from deployment_service import queue_deployment
 from github_app import GitHubAccessError, GitHubAppError, GitHubAppService
 
 
 STATE_TTL_MINUTES = 10
-DELIVERY_TTL_DAYS = 30
 
 
 def _now() -> datetime:
@@ -36,13 +30,6 @@ def _now() -> datetime:
 
 def _state_hash(state: str) -> str:
     return hashlib.sha256(state.encode()).hexdigest()
-
-
-def verify_webhook_signature(raw_body: bytes, signature: str | None, secret: str) -> bool:
-    if not signature or not secret:
-        return False
-    expected = "sha256=" + hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
 
 
 def consume_oauth_state(state: str) -> dict[str, Any] | None:
@@ -79,7 +66,7 @@ def _installation_document(payload: dict[str, Any], status: str = "active") -> d
     }
 
 
-def create_github_router(worker: Callable[..., None]) -> APIRouter:
+def create_github_router() -> APIRouter:
     router = APIRouter(prefix="/api/v1/github", tags=["github-app"])
 
     def service(*, complete: bool = True) -> GitHubAppService:
@@ -256,142 +243,8 @@ def create_github_router(worker: Callable[..., None]) -> APIRouter:
             raise HTTPException(status_code=404, detail="GitHub connection not found")
         projects_col().update_many(
             {"user_id": user["user_id"], "github_installation_id": installation_id},
-            {"$set": {"github_access_status": "disconnected", "auto_deploy": False}},
+            {"$set": {"github_access_status": "disconnected"}},
         )
         return {"status": "disconnected"}
 
-    @router.post("/webhook", status_code=202)
-    async def github_webhook(request: Request, background_tasks: BackgroundTasks):
-        raw_body = await request.body()
-        settings = GitHubAppSettings.from_env()
-        signature = request.headers.get("x-hub-signature-256")
-        if not settings.webhook_secret:
-            raise HTTPException(status_code=503, detail="GitHub webhook is not configured")
-        if not verify_webhook_signature(raw_body, signature, settings.webhook_secret):
-            raise HTTPException(status_code=401, detail="Invalid GitHub webhook signature")
-
-        event = request.headers.get("x-github-event")
-        delivery_id = request.headers.get("x-github-delivery")
-        if not event or not delivery_id:
-            raise HTTPException(status_code=400, detail="Missing GitHub webhook headers")
-        now = _now()
-        try:
-            github_webhook_deliveries_col().insert_one({
-                "delivery_id": delivery_id,
-                "event": event,
-                "received_at": now,
-                "expires_at": now + timedelta(days=DELIVERY_TTL_DAYS),
-                "status": "received",
-            })
-        except DuplicateKeyError:
-            return {"status": "duplicate", "delivery_id": delivery_id}
-
-        try:
-            payload = json.loads(raw_body)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            github_webhook_deliveries_col().update_one(
-                {"delivery_id": delivery_id}, {"$set": {"status": "invalid_json"}}
-            )
-            raise HTTPException(status_code=400, detail="Invalid JSON payload") from None
-
-        installation_id = (payload.get("installation") or {}).get("id")
-        repository_id = (payload.get("repository") or {}).get("id")
-        github_webhook_deliveries_col().update_one(
-            {"delivery_id": delivery_id},
-            {"$set": {"installation_id": installation_id, "repository_id": repository_id}},
-        )
-
-        if event == "ping":
-            status = "accepted"
-        elif event == "push":
-            status = _handle_push(payload, delivery_id, background_tasks, worker)
-        elif event == "installation":
-            status = _handle_installation(payload)
-        elif event == "installation_repositories":
-            status = _handle_installation_repositories(payload)
-        else:
-            status = "ignored"
-        github_webhook_deliveries_col().update_one(
-            {"delivery_id": delivery_id}, {"$set": {"status": status}}
-        )
-        return {"status": status, "delivery_id": delivery_id}
-
     return router
-
-
-def _handle_push(
-    payload: dict[str, Any],
-    delivery_id: str,
-    background_tasks: BackgroundTasks,
-    worker: Callable[..., None],
-) -> str:
-    ref = str(payload.get("ref", ""))
-    commit_sha = str(payload.get("after", ""))
-    if payload.get("deleted") or not ref.startswith("refs/heads/") or set(commit_sha) == {"0"}:
-        return "ignored"
-    installation_id = (payload.get("installation") or {}).get("id")
-    repository_id = (payload.get("repository") or {}).get("id")
-    if installation_id is None or repository_id is None or len(commit_sha) != 40:
-        return "ignored"
-    branch = ref.removeprefix("refs/heads/")
-    projects = list(projects_col().find({
-        "github_installation_id": int(installation_id),
-        "github_repo_id": int(repository_id),
-        "deploy_branch": branch,
-        "auto_deploy": True,
-        "github_access_status": "active",
-    }))
-    queued = 0
-    for project in projects:
-        _, created = queue_deployment(
-            project,
-            commit_sha,
-            branch,
-            "webhook",
-            worker=worker,
-            background_tasks=background_tasks,
-            webhook_delivery_id=delivery_id,
-        )
-        queued += int(created)
-    return "accepted" if queued else "ignored"
-
-
-def _handle_installation(payload: dict[str, Any]) -> str:
-    action = payload.get("action")
-    installation = payload.get("installation") or {}
-    if not installation.get("id"):
-        return "ignored"
-    installation_id = int(installation["id"])
-    status_map = {"created": "active", "unsuspend": "active", "deleted": "deleted", "suspend": "suspended"}
-    status = status_map.get(str(action), "active")
-    document = _installation_document(installation, status)
-    github_installations_col().update_one(
-        {"installation_id": installation_id},
-        {"$set": document, "$setOnInsert": {"created_at": _now()}},
-        upsert=True,
-    )
-    if action in {"deleted", "suspend"}:
-        github_connections_col().update_many(
-            {"installation_id": installation_id}, {"$set": {"status": status, "updated_at": _now()}}
-        )
-        projects_col().update_many(
-            {"github_installation_id": installation_id},
-            {"$set": {"github_access_status": status, "auto_deploy": False}},
-        )
-    return "accepted"
-
-
-def _handle_installation_repositories(payload: dict[str, Any]) -> str:
-    installation_id = (payload.get("installation") or {}).get("id")
-    if installation_id is None:
-        return "ignored"
-    if payload.get("action") == "removed":
-        removed_ids = [item.get("id") for item in payload.get("repositories_removed", [])]
-        projects_col().update_many(
-            {"github_installation_id": int(installation_id), "github_repo_id": {"$in": removed_ids}},
-            {"$set": {"github_access_status": "repository_removed", "auto_deploy": False}},
-        )
-    github_installations_col().update_one(
-        {"installation_id": int(installation_id)}, {"$set": {"updated_at": _now()}}
-    )
-    return "accepted"
