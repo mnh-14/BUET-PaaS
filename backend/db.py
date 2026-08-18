@@ -76,7 +76,7 @@ def init_indexes():
     deployments_col().create_index([("project_id", ASCENDING),
                                     ("deployed_at", DESCENDING)])     
     deployments_col().create_index("status")
-    deployments_col().create_index("kubernetes.build_job_name")
+    deployments_col().create_index("deployer.build_reference")
     github_installations_col().create_index("installation_id", unique=True)
     github_connections_col().create_index(
         [("user_id", ASCENDING), ("installation_id", ASCENDING)], unique=True

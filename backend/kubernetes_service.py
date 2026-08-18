@@ -1,27 +1,10 @@
-"""Submit and observe the teammate-owned Kubernetes build/deploy manifests."""
+"""HTTP client for the teammate-owned deployment service on the Kubernetes VM."""
 
 import os
-import sys
 import time
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-
-REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
-if str(REPOSITORY_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPOSITORY_ROOT))
-
-from deployer.k3s_conf import JobPipelineBuilder, PaaSManifestBuilder  # noqa: E402
-
-
-@dataclass(frozen=True)
-class KubernetesResult:
-    public_url: str
-    build_job_name: str
-    deployment_name: str
-    service_name: str
-    ingress_name: str
+import requests
 
 
 class KubernetesDeploymentError(RuntimeError):
@@ -29,214 +12,161 @@ class KubernetesDeploymentError(RuntimeError):
 
 
 class KubernetesService:
-    """Small adapter around the official Kubernetes Python client."""
+    """Start builds/deployments and poll their status over the private network."""
 
-    def __init__(self) -> None:
+    BUILD_STATUSES = {"queued", "started", "completed", "failed"}
+    DEPLOY_STATUSES = {"queued", "started", "running", "failed"}
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        token: str | None = None,
+        session: requests.Session | None = None,
+        poll_interval: float | None = None,
+        request_timeout: float | None = None,
+    ) -> None:
+        self.base_url = (base_url or os.getenv(
+            "KUBERNETES_DEPLOYER_URL", "http://127.0.0.1:8080"
+        )).rstrip("/")
+        self.token = token if token is not None else os.getenv(
+            "KUBERNETES_DEPLOYER_TOKEN", ""
+        )
+        self.session = session or requests.Session()
+        self.poll_interval = poll_interval if poll_interval is not None else float(
+            os.getenv("KUBERNETES_STATUS_POLL_INTERVAL", "5")
+        )
+        self.request_timeout = request_timeout if request_timeout is not None else float(
+            os.getenv("KUBERNETES_REQUEST_TIMEOUT", "15")
+        )
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
+
+    def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         try:
-            from kubernetes import client, config, utils, watch
-        except ImportError as exc:
+            response = self.session.request(
+                method,
+                f"{self.base_url}{path}",
+                headers=self._headers(),
+                timeout=self.request_timeout,
+                **kwargs,
+            )
+        except requests.RequestException as exc:
             raise KubernetesDeploymentError(
-                "The Kubernetes Python client is not installed"
+                "The Kubernetes deployment service is unavailable"
             ) from exc
-
-        self.client = client
-        self.utils = utils
-        self.watch = watch
-        try:
-            if os.getenv("KUBERNETES_SERVICE_HOST"):
-                config.load_incluster_config()
-            else:
-                config.load_kube_config(
-                    config_file=os.getenv("KUBECONFIG") or None
-                )
-        except Exception as exc:
+        if response.status_code not in {200, 202}:
             raise KubernetesDeploymentError(
-                "Kubernetes configuration is unavailable"
+                f"The Kubernetes deployment service returned HTTP {response.status_code}"
+            )
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise KubernetesDeploymentError(
+                "The Kubernetes deployment service returned invalid JSON"
             ) from exc
-
-        self.api_client = client.ApiClient()
-        self.core_api = client.CoreV1Api(self.api_client)
-        self.batch_api = client.BatchV1Api(self.api_client)
-        self.apps_api = client.AppsV1Api(self.api_client)
-        self.networking_api = client.NetworkingV1Api(self.api_client)
-
-    def ensure_namespace(self, namespace: str) -> None:
-        try:
-            self.core_api.read_namespace(namespace)
-        except self.client.ApiException as exc:
-            if exc.status != 404:
-                raise
-            self.core_api.create_namespace(
-                self.client.V1Namespace(
-                    metadata=self.client.V1ObjectMeta(name=namespace)
-                )
+        if not isinstance(body, dict):
+            raise KubernetesDeploymentError(
+                "The Kubernetes deployment service returned an invalid response"
             )
+        return body
 
-    def create_github_secret(
-        self, namespace: str, deployment_id: str, token: str
-    ) -> str:
-        name = f"github-clone-{deployment_id}"[:63].rstrip("-")
-        body = self.client.V1Secret(
-            metadata=self.client.V1ObjectMeta(
-                name=name,
-                namespace=namespace,
-                labels={"managed-by": "paas-backend"},
-            ),
-            string_data={"token": token},
-            type="Opaque",
-        )
-        try:
-            self.core_api.create_namespaced_secret(namespace, body)
-        except self.client.ApiException as exc:
-            if exc.status != 409:
-                raise
-            self.core_api.replace_namespaced_secret(name, namespace, body)
-        return name
-
-    def delete_secret(self, namespace: str, name: str | None) -> None:
-        if not name:
-            return
-        try:
-            self.core_api.delete_namespaced_secret(name, namespace)
-        except self.client.ApiException as exc:
-            if exc.status != 404:
-                raise
-
-    def submit_build(self, config: dict[str, Any], secret_name: str | None) -> str:
-        builder = JobPipelineBuilder(
-            app_name=config["app_name"], namespace=config["namespace"]
-        )
-        builder.apply_git_cloner(
-            git_url=config["git_url"],
-            branch=config["git_branch"],
-            github_secret_name=secret_name,
-        )
-        builder.apply_kaniko_build(
-            image_destination=config["image"],
-            dockerfile_path=config["dockerfile_path"],
-        )
-        manifest = builder.build()
-        name = manifest["metadata"]["name"]
-        try:
-            self.batch_api.delete_namespaced_job(
-                name, config["namespace"], propagation_policy="Foreground"
-            )
-        except self.client.ApiException as exc:
-            if exc.status != 404:
-                raise
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            try:
-                self.batch_api.read_namespaced_job(name, config["namespace"])
-            except self.client.ApiException as exc:
-                if exc.status == 404:
-                    break
-                raise
-            time.sleep(0.5)
-        else:
-            raise KubernetesDeploymentError("Previous Kubernetes build Job is still deleting")
-        self.utils.create_from_dict(self.api_client, manifest)
-        return name
-
-    def wait_for_build(self, namespace: str, job_name: str, timeout: int) -> None:
-        watcher = self.watch.Watch()
-        try:
-            for event in watcher.stream(
-                self.batch_api.list_namespaced_job,
-                namespace=namespace,
-                field_selector=f"metadata.name={job_name}",
-                timeout_seconds=timeout,
-            ):
-                job = event["object"]
-                if job.status.succeeded:
-                    return
-                if job.status.failed and job.status.failed > 1:
-                    raise KubernetesDeploymentError(self._build_failure(namespace, job_name))
-        finally:
-            watcher.stop()
-        raise KubernetesDeploymentError("Kubernetes build timed out")
-
-    def _build_failure(self, namespace: str, job_name: str) -> str:
-        pods = self.core_api.list_namespaced_pod(
-            namespace, label_selector=f"job-name={job_name}"
-        ).items
-        if not pods:
-            return "Kubernetes build Job failed before creating a Pod"
-        pod = pods[-1]
-        try:
-            logs = self.core_api.read_namespaced_pod_log(
-                pod.metadata.name, namespace, tail_lines=40
-            )
-        except Exception:
-            logs = ""
-        reason = pod.status.reason or "Kubernetes build Job failed"
-        return f"{reason}: {logs[-4000:]}" if logs else reason
-
-    def submit_application(self, config: dict[str, Any]) -> dict[str, str]:
-        manifests = PaaSManifestBuilder(config=config).build_all()
-        for manifest in manifests.values():
-            self._create_or_replace(manifest, config["namespace"])
+    @staticmethod
+    def _identity(config: dict[str, Any]) -> dict[str, Any]:
         return {
-            "deployment_name": f"{config['app_name']}-deployment",
-            "service_name": f"{config['app_name']}-service",
-            "ingress_name": f"{config['app_name']}-ingress",
+            "deployment_id": config["deployment_id"],
+            "project_id": config["project_id"],
+            "project_name": config["app_name"],
+            "namespace": config["namespace"],
         }
 
-    def _create_or_replace(self, manifest: dict[str, Any], namespace: str) -> None:
-        kind = manifest["kind"]
-        name = manifest["metadata"]["name"]
-        try:
-            self.utils.create_from_dict(self.api_client, manifest)
-            return
-        except self.client.ApiException as exc:
-            if exc.status != 409:
-                raise
-        if kind == "Deployment":
-            self.apps_api.patch_namespaced_deployment(name, namespace, manifest)
-        elif kind == "Service":
-            self.core_api.patch_namespaced_service(name, namespace, manifest)
-        elif kind == "Ingress":
-            self.networking_api.patch_namespaced_ingress(name, namespace, manifest)
-        else:
-            raise KubernetesDeploymentError(f"Cannot replace Kubernetes {kind}")
+    def start_build(
+        self, config: dict[str, Any], github_token: str | None = None
+    ) -> dict[str, Any]:
+        payload = {
+            **self._identity(config),
+            "git_url": config["git_url"],
+            "git_branch": config["git_branch"],
+            "dockerfile_path": config["dockerfile_path"],
+            "image": config["image"],
+        }
+        if github_token:
+            payload["github_auth"] = {"type": "installation_token", "token": github_token}
+        return self._request("POST", "/api/v1/build", json=payload)
 
-    def wait_for_application(
-        self, namespace: str, deployment_name: str, ingress_name: str, timeout: int
-    ) -> str:
-        watcher = self.watch.Watch()
-        try:
-            for event in watcher.stream(
-                self.apps_api.list_namespaced_deployment,
-                namespace=namespace,
-                field_selector=f"metadata.name={deployment_name}",
-                timeout_seconds=timeout,
-            ):
-                deployment = event["object"]
-                desired = deployment.spec.replicas or 1
-                if (deployment.status.available_replicas or 0) >= desired:
-                    ingress = self.networking_api.read_namespaced_ingress(
-                        ingress_name, namespace
-                    )
-                    rules = ingress.spec.rules or []
-                    if not rules or not rules[0].host:
-                        raise KubernetesDeploymentError(
-                            "Deployment is ready but Ingress has no public host"
-                        )
-                    return f"http://{rules[0].host}"
-        finally:
-            watcher.stop()
-        raise KubernetesDeploymentError("Application did not become ready in time")
+    def start_deploy(self, config: dict[str, Any]) -> dict[str, Any]:
+        payload = {
+            **self._identity(config),
+            "image": config["image"],
+            "container_port": config["container_port"],
+            "replicas": config["replicas"],
+            "resources": {
+                "cpu_request": config["cpu_request"],
+                "cpu_limit": config["cpu_limit"],
+                "memory_request": config["memory_request"],
+                "memory_limit": config["memory_limit"],
+            },
+            "env_vars": config["env_vars"],
+            "grace_period_seconds": config["grace_period_seconds"],
+            "read_only_rootfs": config["read_only_rootfs"],
+        }
+        return self._request("POST", "/api/v1/deploy", json=payload)
 
-    def delete_project(self, namespace: str, app_name: str) -> None:
-        targets = (
-            (self.apps_api.delete_namespaced_deployment, f"{app_name}-deployment"),
-            (self.core_api.delete_namespaced_service, f"{app_name}-service"),
-            (self.networking_api.delete_namespaced_ingress, f"{app_name}-ingress"),
-            (self.batch_api.delete_namespaced_job, f"{app_name}-{namespace}-build-job"),
-        )
-        for delete, name in targets:
+    def get_status(self, config: dict[str, Any], operation: str) -> dict[str, Any]:
+        if operation not in {"build", "deploy"}:
+            raise ValueError("operation must be build or deploy")
+        result = self._request("GET", "/api/v1/status", params={
+            "project_name": config["app_name"],
+            "namespace": config["namespace"],
+            "deployment_id": config["deployment_id"],
+            "type": operation,
+        })
+        status = result.get("status")
+        allowed = self.BUILD_STATUSES if operation == "build" else self.DEPLOY_STATUSES
+        if status not in allowed:
+            raise KubernetesDeploymentError(
+                f"The deployment service returned an unknown {operation} status"
+            )
+        if operation == "deploy" and status == "running" and not result.get("url"):
+            raise KubernetesDeploymentError(
+                "The deployment service reported running without a public URL"
+            )
+        return result
+
+    def wait_for_status(
+        self,
+        config: dict[str, Any],
+        operation: str,
+        timeout: float,
+        on_update: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout
+        previous_status = None
+        consecutive_errors = 0
+        while time.monotonic() < deadline:
             try:
-                delete(name, namespace)
-            except self.client.ApiException as exc:
-                if exc.status != 404:
+                result = self.get_status(config, operation)
+                consecutive_errors = 0
+            except KubernetesDeploymentError:
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
                     raise
+                time.sleep(self.poll_interval)
+                continue
+            status = result["status"]
+            if status == "failed":
+                raise KubernetesDeploymentError(
+                    str(result.get("error") or result.get("message") or f"{operation.title()} failed")
+                )
+            if status != previous_status:
+                on_update(result)
+                previous_status = status
+            if (operation == "build" and status == "completed") or (
+                operation == "deploy" and status == "running"
+            ):
+                return result
+            time.sleep(self.poll_interval)
+        raise KubernetesDeploymentError(f"Kubernetes {operation} status timed out")

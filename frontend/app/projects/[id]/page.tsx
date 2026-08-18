@@ -27,8 +27,11 @@ const STAGES: DeploymentStatus[] = [
   "queued",
   "cloning",
   "security_scan_running",
-  "building",
-  "deploying",
+  "build_queued",
+  "build_started",
+  "build_done",
+  "deploy_queued",
+  "deploy_started",
   "running",
 ];
 
@@ -36,8 +39,11 @@ const STAGE_LABELS: Record<string, string> = {
   queued: "Queued",
   cloning: "Cloning",
   security_scan_running: "Security Scan",
-  building: "Building",
-  deploying: "Deploying",
+  build_queued: "Build Queue",
+  build_started: "Build Started",
+  build_done: "Build Done",
+  deploy_queued: "Deploy Queue",
+  deploy_started: "Deploy Started",
   running: "Running",
 };
 
@@ -46,19 +52,16 @@ const ACTIVE_STATUSES: DeploymentStatus[] = [
   "cloning",
   "security_scan_running",
   "security_scan_passed",
-  "submitting_build",
-  "building",
-  "deploying",
-  "waiting_for_pods",
+  "build_queued",
+  "build_started",
+  "build_done",
+  "deploy_queued",
+  "deploy_started",
 ];
 
 function Pipeline({ status }: { status: DeploymentStatus }) {
   const normalizedStatus =
-    status === "security_scan_passed" || status === "submitting_build"
-      ? "building"
-      : status === "waiting_for_pods"
-        ? "deploying"
-        : status;
+    status === "security_scan_passed" ? "build_queued" : status;
   const currentIdx = STAGES.indexOf(normalizedStatus);
   const securityFailed =
     status === "security_scan_failed" || status === "security_scan_error";

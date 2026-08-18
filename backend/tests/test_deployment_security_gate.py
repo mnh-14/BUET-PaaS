@@ -55,15 +55,23 @@ def install_pipeline_fakes(monkeypatch, scan_outcome, enabled=True):
             return scan_outcome
 
     class FakeKubernetes:
-        def ensure_namespace(self, _namespace): events.append("namespace")
-        def create_github_secret(self, *_args): return "secret"
-        def delete_secret(self, *_args): pass
-        def submit_build(self, _config, _secret): events.append("build"); return "job"
-        def wait_for_build(self, *_args): events.append("build-ready")
-        def submit_application(self, _config):
+        def start_build(self, _config, _token):
+            events.append("build")
+            return {"status": "queued", "build_id": "build-1"}
+        def start_deploy(self, _config):
             events.append("deploy")
-            return {"deployment_name": "app-deployment", "service_name": "app-service", "ingress_name": "app-ingress"}
-        def wait_for_application(self, *_args): events.append("ready"); return "http://app.test"
+            return {"status": "queued", "deploy_id": "deploy-1"}
+        def wait_for_status(self, _config, operation, _timeout, on_update):
+            if operation == "build":
+                events.append("build-ready")
+                on_update({"status": "started"})
+                result = {"status": "completed"}
+            else:
+                events.append("ready")
+                on_update({"status": "started"})
+                result = {"status": "running", "url": "http://app.test"}
+            on_update(result)
+            return result
 
     monkeypatch.setattr(main, "deployments_col", lambda: deployments)
     monkeypatch.setattr(main, "projects_col", lambda: projects)
@@ -113,7 +121,7 @@ def test_successful_pipeline_scans_before_kubernetes_build_and_deploy(monkeypatc
     events, deployments = install_pipeline_fakes(monkeypatch, result())
     run_deployment()
     assert events == [
-        "clone", "checkout", "scan", "namespace", "build",
+        "clone", "checkout", "scan", "build",
         "build-ready", "deploy", "ready",
     ]
     assert "security_scan_passed" in statuses(deployments)
@@ -140,7 +148,7 @@ def test_disabled_scanning_preserves_kubernetes_pipeline(monkeypatch):
     events, deployments = install_pipeline_fakes(monkeypatch, result(), enabled=False)
     run_deployment()
     assert events == [
-        "clone", "checkout", "namespace", "build",
+        "clone", "checkout", "build",
         "build-ready", "deploy", "ready",
     ]
     assert statuses(deployments)[-1] == "running"

@@ -285,16 +285,19 @@ def build_and_deploy(
     def set_status(status: str, error: str = None, url: str = None):
         """Updates deployment document and parent project status."""
         nonlocal current_stage
+        if status == current_stage and error is None and url is None:
+            return
         previous_stage = current_stage
         current_stage = status
         messages = {
             "cloning": "Fetching source from GitHub",
             "security_scan_running": "Running the SonarQube quality gate",
             "security_scan_passed": "Security quality gate passed",
-            "submitting_build": "Submitting the Kubernetes build Job",
-            "building": "Kubernetes is building and pushing the image",
-            "deploying": "Applying the Kubernetes application manifests",
-            "waiting_for_pods": "Waiting for application Pods to become ready",
+            "build_queued": "Build is queued on the Kubernetes VM",
+            "build_started": "Kubernetes is building and pushing the image",
+            "build_done": "Image build completed",
+            "deploy_queued": "Deployment is queued on the Kubernetes VM",
+            "deploy_started": "Kubernetes is starting the application",
             "running": "Deployment is live",
             "failed": "Deployment failed",
             "security_scan_failed": "Security quality gate failed",
@@ -469,49 +472,53 @@ def build_and_deploy(
             }},
         )
 
-        set_status("submitting_build")
+        set_status("build_queued")
         kube = KubernetesService()
-        kube.ensure_namespace(deployer_config["namespace"])
-        github_secret_name = None
-        try:
-            if github_installation_id is not None:
-                token = GitHubAppService(
-                    GitHubAppSettings.from_env(require_complete=True)
-                ).create_installation_token(github_installation_id, github_repo_id)
-                github_secret_name = kube.create_github_secret(
-                    deployer_config["namespace"], deployment_id, token
-                )
-                del token
-            job_name = kube.submit_build(deployer_config, github_secret_name)
-            deployments_col().update_one(
-                {"deployment_id": deployment_id},
-                {"$set": {
-                    "kubernetes.namespace": deployer_config["namespace"],
-                    "kubernetes.build_job_name": job_name,
-                }},
-            )
-            set_status("building")
-            kube.wait_for_build(
-                deployer_config["namespace"],
-                job_name,
-                int(os.getenv("KUBERNETES_BUILD_TIMEOUT", "1800")),
-            )
-        finally:
-            kube.delete_secret(deployer_config["namespace"], github_secret_name)
-
-        set_status("deploying")
-        names = kube.submit_application(deployer_config)
+        github_token = None
+        if github_installation_id is not None:
+            github_token = GitHubAppService(
+                GitHubAppSettings.from_env(require_complete=True)
+            ).create_installation_token(github_installation_id, github_repo_id)
+        build_response = kube.start_build(deployer_config, github_token)
+        github_token = None
         deployments_col().update_one(
             {"deployment_id": deployment_id},
-            {"$set": {f"kubernetes.{key}": value for key, value in names.items()}},
+            {"$set": {
+                "deployer.namespace": deployer_config["namespace"],
+                "deployer.build_reference": build_response.get("build_id"),
+            }},
         )
-        set_status("waiting_for_pods")
-        url = kube.wait_for_application(
-            deployer_config["namespace"],
-            names["deployment_name"],
-            names["ingress_name"],
-            int(os.getenv("KUBERNETES_DEPLOY_TIMEOUT", "600")),
+
+        build_status_map = {
+            "queued": "build_queued",
+            "started": "build_started",
+            "completed": "build_done",
+        }
+        kube.wait_for_status(
+            deployer_config, "build",
+            float(os.getenv("KUBERNETES_BUILD_TIMEOUT", "1800")),
+            lambda result: set_status(build_status_map[result["status"]]),
         )
+
+        set_status("deploy_queued")
+        deploy_response = kube.start_deploy(deployer_config)
+        deployments_col().update_one(
+            {"deployment_id": deployment_id},
+            {"$set": {"deployer.deploy_reference": deploy_response.get("deploy_id")}},
+        )
+        deploy_status_map = {
+            "queued": "deploy_queued",
+            "started": "deploy_started",
+            "running": "running",
+        }
+        final_result = kube.wait_for_status(
+            deployer_config, "deploy",
+            float(os.getenv("KUBERNETES_DEPLOY_TIMEOUT", "600")),
+            lambda result: set_status(
+                deploy_status_map[result["status"]], url=result.get("url")
+            ),
+        )
+        url = final_result.get("url")
         projects_col().update_one(
             {"project_id": project_id},
             {"$set": {
@@ -521,7 +528,6 @@ def build_and_deploy(
                 "updated_at": datetime.now(timezone.utc),
             }},
         )
-        set_status("running", url=url)
         print(f"  [{deployment_id[:8]}] ✓ Running at {url}")
 
       except Exception as exc:
@@ -536,7 +542,8 @@ def resume_incomplete_deployments() -> None:
     """Restart interrupted orchestration from MongoDB after a backend restart."""
     active_statuses = [
         "queued", "cloning", "security_scan_running", "security_scan_passed",
-        "submitting_build", "building", "deploying", "waiting_for_pods",
+        "build_queued", "build_started", "build_done",
+        "deploy_queued", "deploy_started",
     ]
     for deployment in deployments_col().find({"status": {"$in": active_statuses}}):
         project = projects_col().find_one({"project_id": deployment["project_id"]})
@@ -912,17 +919,13 @@ def get_project(project_id: str, user: dict = Depends(require_user)):
 def delete_project(
     project_id: str, request: Request, user: dict = Depends(require_user)
 ):
-    """Remove the Kubernetes resources owned by a project."""
+    """Archive a project locally; the VM API currently has no teardown function."""
     enforce_same_origin(request)
     project = projects_col().find_one(
         {"project_id": project_id, "user_id": user["user_id"]}
     )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
-    try:
-        KubernetesService().delete_project(project["namespace"], project["app_name"])
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
     deployments_col().update_many(
         {"project_id": project_id},
         {"$set": {"status": "stopped", "public_url": None}}
@@ -1048,8 +1051,8 @@ def redeploy_project(
         "project_id": project_id,
         "status": {"$in": [
             "queued", "cloning", "security_scan_running",
-            "security_scan_passed", "submitting_build", "building",
-            "deploying", "waiting_for_pods",
+            "security_scan_passed", "build_queued", "build_started", "build_done",
+            "deploy_queued", "deploy_started",
         ]},
     })
     if active:

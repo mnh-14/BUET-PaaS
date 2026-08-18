@@ -15,7 +15,7 @@ This README covers running the frontend and MongoDB using Docker. For backend se
 
 Students authenticate to BUET-PaaS, install the shared GitHub App, and create a project from an authorized repository and branch. The project page checks the branch head on demand and enables the manual deploy button when it differs from the last successfully deployed commit.
 
-The backend clones the selected source for SonarQube analysis, then submits the existing Kubernetes build/deploy manifests. It watches Kubernetes Jobs and Deployments through the native Watch API, persists status and the final Ingress URL in MongoDB, and streams changes to the frontend with SSE. Private clones use temporary GitHub App token Secrets. There is no webhook auto-deployment, continuous commit poller, local application Docker execution, or Cloudflare application tunnel.
+The backend clones the selected source for SonarQube analysis, then calls the private deployment service on the Kubernetes VM. It polls that service every five seconds for build/deploy status, persists state changes and the final URL in MongoDB, and streams changes to the frontend with SSE. Private build requests use short-lived GitHub App installation tokens. There is no native Kubernetes Watch connection, webhook auto-deployment, continuous commit poller, local application Docker execution, or Cloudflare application tunnel.
 
 ## Prerequisites
 

@@ -8,12 +8,23 @@ The FastAPI backend owns authentication, GitHub App access, on-demand commit che
 2. Project creation stores configuration only; it does not deploy automatically.
 3. `POST /api/v1/projects/{project_id}/check-update` asks GitHub for the selected branch head and compares it with `last_deployed_sha`.
 4. `POST /api/v1/deployments/redeploy/{project_id}` resolves the head again, clones it with a short-lived installation token, and runs the SonarQube quality gate.
-5. After the gate passes, the backend discovers the Dockerfile and exposed port, maps the selected size to bounded Kubernetes resources, and submits the existing Kubernetes build Job.
-6. For private repositories the backend creates a temporary namespaced Secret. The builder reads `GITHUB_TOKEN` via `secretKeyRef`; the Secret is deleted after the Job finishes.
-7. The backend uses the Kubernetes Watch API for Job and Deployment completion, reads the Ingress host, and stores every meaningful state in MongoDB.
+5. After the gate passes, the backend discovers the Dockerfile and exposed port, maps the selected size to bounded Kubernetes resources, and calls the deployment service on the Kubernetes VM.
+6. For private repositories the build request includes a short-lived GitHub App installation token. The VM service must create a temporary namespaced Secret and delete it when the clone finishes. The backend never stores this token.
+7. The backend starts a build, polls its status every five seconds, starts deployment after the build completes, then polls until the container is running and the service returns its URL. Only state changes are stored in MongoDB.
 8. `GET /api/v1/deployments/{deployment_id}/events` streams changed MongoDB deployment documents to the browser with Server-Sent Events. Normal GET endpoints remain the reconnect and recovery source.
 
-There is no GitHub webhook, continuous GitHub poller, local application Docker build/run, Cloudflare application tunnel, custom Kubernetes WebSocket, or Kubernetes callback endpoint in this flow.
+There is no GitHub webhook, continuous GitHub poller, local application Docker build/run, Cloudflare application tunnel, Kubernetes Watch connection, WebSocket, or callback endpoint in this flow.
+
+## Kubernetes VM service contract
+
+Run the private service on configurable port `8080` and set `KUBERNETES_DEPLOYER_URL=http://<vm-private-ip>:8080`. All routes may require the bearer token configured as `KUBERNETES_DEPLOYER_TOKEN`.
+
+- `POST /api/v1/build` accepts deployment/project identity, `project_name`, namespace, Git URL/branch, Dockerfile path, image destination, and optional `github_auth: {type, token}`. Return HTTP 202 with `status: queued` and optionally `build_id`.
+- `POST /api/v1/deploy` accepts identity, image, container port, replicas, CPU/RAM resources, environment variables, grace period, and read-only-root setting. Return HTTP 202 with `status: queued` and optionally `deploy_id`.
+- `GET /api/v1/status?project_name=...&namespace=...&deployment_id=...&type=build|deploy` returns build status `queued`, `started`, `completed`, or `failed`; or deploy status `queued`, `started`, `running`, or `failed`. A running deploy must include `url`; failures should include `error` or `message`.
+- `GET /health` is recommended for operations, although the application workflow does not depend on it.
+
+Start routes must be idempotent for `deployment_id`, because restart recovery may repeat a request. The service must not log GitHub tokens. The backend maps service updates to `build_queued`, `build_started`, `build_done`, `deploy_queued`, `deploy_started`, `running`, or `failed`; SSE forwards the MongoDB state to the browser.
 
 ## Project inputs
 
@@ -41,9 +52,7 @@ Namespace is derived from the authenticated user ID. Dockerfile path and contain
 
 ## Configuration
 
-Copy `.env.example` to `.env`. Required integrations include MongoDB, SonarQube, GitHub App credentials, a session secret, and either a local kubeconfig or an in-cluster Kubernetes service account.
-
-The backend service account needs access to create/read/watch/delete Jobs, Pods, Pod logs, Deployments, Services, Ingresses, Secrets, and user namespaces. GitHub App tokens are never stored in MongoDB or sent to the frontend.
+Copy `.env.example` to `.env`. Required integrations include MongoDB, SonarQube, GitHub App credentials, a session secret, and the private Kubernetes VM service URL/token. The backend needs no kubeconfig or Kubernetes RBAC access. GitHub App tokens are never stored in MongoDB or sent to the frontend.
 
 ## Run and test
 
