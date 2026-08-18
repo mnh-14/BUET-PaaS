@@ -14,8 +14,19 @@ class KubernetesDeploymentError(RuntimeError):
 class KubernetesService:
     """Start builds/deployments and poll their status over the private network."""
 
-    BUILD_STATUSES = {"queued", "started", "completed", "failed"}
-    DEPLOY_STATUSES = {"queued", "started", "running", "failed"}
+    BUILD_STATUS_MAP = {
+        "Pending": "queued",
+        "Running": "started",
+        "Succeeded": "completed",
+        "Failed": "failed",
+        "Unknown": "unknown",
+    }
+    DEPLOY_STATUS_MAP = {
+        "Pending": "queued",
+        "Running": "running",
+        "Failed": "failed",
+        "Unknown": "unknown",
+    }
 
     def __init__(
         self,
@@ -26,7 +37,7 @@ class KubernetesService:
         request_timeout: float | None = None,
     ) -> None:
         self.base_url = (base_url or os.getenv(
-            "KUBERNETES_DEPLOYER_URL", "http://127.0.0.1:8080"
+            "KUBERNETES_DEPLOYER_URL", "http://127.0.0.1:5000"
         )).rstrip("/")
         self.token = token if token is not None else os.getenv(
             "KUBERNETES_DEPLOYER_TOKEN", ""
@@ -74,20 +85,14 @@ class KubernetesService:
             )
         return body
 
-    @staticmethod
-    def _identity(config: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "deployment_id": config["deployment_id"],
-            "project_id": config["project_id"],
-            "project_name": config["app_name"],
-            "namespace": config["namespace"],
-        }
-
     def start_build(
         self, config: dict[str, Any], github_token: str | None = None
     ) -> dict[str, Any]:
         payload = {
-            **self._identity(config),
+            "deployment_id": config["deployment_id"],
+            "project_id": config["project_id"],
+            "app_name": config["app_name"],
+            "namespace": config["namespace"],
             "git_url": config["git_url"],
             "git_branch": config["git_branch"],
             "dockerfile_path": config["dockerfile_path"],
@@ -95,46 +100,54 @@ class KubernetesService:
         }
         if github_token:
             payload["github_auth"] = {"type": "installation_token", "token": github_token}
-        return self._request("POST", "/api/v1/build", json=payload)
+        result = self._request("POST", "/api/build", json=payload)
+        self._require_success(result, "build")
+        return result
 
     def start_deploy(self, config: dict[str, Any]) -> dict[str, Any]:
         payload = {
-            **self._identity(config),
+            "deployment_id": config["deployment_id"],
+            "project_id": config["project_id"],
+            "app_name": config["app_name"],
+            "namespace": config["namespace"],
             "image": config["image"],
             "container_port": config["container_port"],
             "replicas": config["replicas"],
-            "resources": {
-                "cpu_request": config["cpu_request"],
-                "cpu_limit": config["cpu_limit"],
-                "memory_request": config["memory_request"],
-                "memory_limit": config["memory_limit"],
-            },
+            "cpu_request": config["cpu_request"],
+            "cpu_limit": config["cpu_limit"],
+            "memory_request": config["memory_request"],
+            "memory_limit": config["memory_limit"],
             "env_vars": config["env_vars"],
             "grace_period_seconds": config["grace_period_seconds"],
             "read_only_rootfs": config["read_only_rootfs"],
         }
-        return self._request("POST", "/api/v1/deploy", json=payload)
+        result = self._request("POST", "/api/deploy", json=payload)
+        self._require_success(result, "deploy")
+        return result
+
+    @staticmethod
+    def _require_success(result: dict[str, Any], operation: str) -> None:
+        if result.get("status") != "success":
+            raise KubernetesDeploymentError(
+                str(result.get("message") or f"The {operation} request was rejected")
+            )
 
     def get_status(self, config: dict[str, Any], operation: str) -> dict[str, Any]:
         if operation not in {"build", "deploy"}:
             raise ValueError("operation must be build or deploy")
-        result = self._request("GET", "/api/v1/status", params={
-            "project_name": config["app_name"],
+        path = "/api/build/status" if operation == "build" else "/api/deploy/status"
+        result = self._request("POST", path, json={
+            "name": config["app_name"],
             "namespace": config["namespace"],
-            "deployment_id": config["deployment_id"],
-            "type": operation,
         })
-        status = result.get("status")
-        allowed = self.BUILD_STATUSES if operation == "build" else self.DEPLOY_STATUSES
-        if status not in allowed:
+        self._require_success(result, f"{operation} status")
+        raw_status = result.get("result")
+        status_map = self.BUILD_STATUS_MAP if operation == "build" else self.DEPLOY_STATUS_MAP
+        if raw_status not in status_map:
             raise KubernetesDeploymentError(
                 f"The deployment service returned an unknown {operation} status"
             )
-        if operation == "deploy" and status == "running" and not result.get("url"):
-            raise KubernetesDeploymentError(
-                "The deployment service reported running without a public URL"
-            )
-        return result
+        return {**result, "raw_status": raw_status, "status": status_map[raw_status]}
 
     def wait_for_status(
         self,
@@ -157,6 +170,9 @@ class KubernetesService:
                 time.sleep(self.poll_interval)
                 continue
             status = result["status"]
+            if status == "unknown":
+                time.sleep(self.poll_interval)
+                continue
             if status == "failed":
                 raise KubernetesDeploymentError(
                     str(result.get("error") or result.get("message") or f"{operation.title()} failed")

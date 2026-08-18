@@ -17,14 +17,15 @@ There is no GitHub webhook, continuous GitHub poller, local application Docker b
 
 ## Kubernetes VM service contract
 
-Run the private service on configurable port `8080` and set `KUBERNETES_DEPLOYER_URL=http://<vm-private-ip>:8080`. All routes may require the bearer token configured as `KUBERNETES_DEPLOYER_TOKEN`.
+The current Flask service listens on port `5000`; set `KUBERNETES_DEPLOYER_URL=http://<vm-private-ip>:5000` when it is exposed directly on the private network. Its Kubernetes `ClusterIP` service instead exposes port `80` and is reachable only from within the cluster. `KUBERNETES_DEPLOYER_TOKEN` is optional because the current service does not enforce authentication.
 
-- `POST /api/v1/build` accepts deployment/project identity, `project_name`, namespace, Git URL/branch, Dockerfile path, image destination, and optional `github_auth: {type, token}`. Return HTTP 202 with `status: queued` and optionally `build_id`.
-- `POST /api/v1/deploy` accepts identity, image, container port, replicas, CPU/RAM resources, environment variables, grace period, and read-only-root setting. Return HTTP 202 with `status: queued` and optionally `deploy_id`.
-- `GET /api/v1/status?project_name=...&namespace=...&deployment_id=...&type=build|deploy` returns build status `queued`, `started`, `completed`, or `failed`; or deploy status `queued`, `started`, `running`, or `failed`. A running deploy must include `url`; failures should include `error` or `message`.
+- `POST /api/build` accepts the flat application config, including `app_name`, namespace, Git URL/branch, Dockerfile path, and image. It returns HTTP 202 with `status: success`.
+- `POST /api/deploy` accepts the flat application config, including image, container port, replicas, individual CPU/RAM fields, environment variables, grace period, and read-only-root setting. It returns HTTP 202 with `status: success`.
+- `POST /api/build/status` accepts `{name, namespace}` and returns `result` as `Pending`, `Running`, `Succeeded`, `Failed`, or `Unknown`.
+- `POST /api/deploy/status` accepts `{name, namespace}` and returns `result` as `Pending`, `Running`, `Failed`, or `Unknown`.
 - `GET /health` is recommended for operations, although the application workflow does not depend on it.
 
-Start routes must be idempotent for `deployment_id`, because restart recovery may repeat a request. The service must not log GitHub tokens. The backend maps service updates to `build_queued`, `build_started`, `build_done`, `deploy_queued`, `deploy_started`, `running`, or `failed`; SSE forwards the MongoDB state to the browser.
+The backend maps these results to `build_queued`, `build_started`, `build_done`, `deploy_queued`, `running`, or `failed`; SSE forwards MongoDB changes to the browser. The current deploy status cannot distinguish `deploy_started`, and the live URL will be generated later when its pattern is finalized. Restart safety still requires the service's create operations to become idempotent. Private Kubernetes-side Git cloning also still requires the deployer to consume the short-lived `github_auth` sent by the backend.
 
 ## Project inputs
 

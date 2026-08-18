@@ -17,37 +17,62 @@ CONFIG = {
 
 def response(status_code=202, body=None):
     result = Mock(status_code=status_code)
-    result.json.return_value = body or {"status": "queued"}
+    result.json.return_value = body or {"status": "success"}
     return result
 
 
 def test_build_request_sends_private_token_only_in_body():
     session = Mock()
     session.request.return_value = response()
-    service = KubernetesService("http://vm:8080", "service-secret", session, 0, 1)
+    service = KubernetesService("http://vm:5000", "service-secret", session, 0, 1)
     service.start_build(CONFIG, "github-token")
     call = session.request.call_args
-    assert call.args[:2] == ("POST", "http://vm:8080/api/v1/build")
+    assert call.args[:2] == ("POST", "http://vm:5000/api/build")
     assert call.kwargs["headers"]["Authorization"] == "Bearer service-secret"
     assert call.kwargs["json"]["github_auth"]["token"] == "github-token"
+    assert call.kwargs["json"]["app_name"] == "my-app"
     assert call.kwargs["json"]["namespace"] == "2105001"
 
 
 def test_status_query_contains_operation_and_identity():
     session = Mock()
-    session.request.return_value = response(200, {"status": "started"})
-    service = KubernetesService("http://vm:8080", session=session, poll_interval=0)
+    session.request.return_value = response(
+        200, {"status": "success", "result": "Running"}
+    )
+    service = KubernetesService("http://vm:5000", session=session, poll_interval=0)
     assert service.get_status(CONFIG, "build")["status"] == "started"
-    params = session.request.call_args.kwargs["params"]
-    assert params == {
-        "project_name": "my-app", "namespace": "2105001",
-        "deployment_id": "dep-1", "type": "build",
+    call = session.request.call_args
+    assert call.args[:2] == ("POST", "http://vm:5000/api/build/status")
+    assert call.kwargs["json"] == {
+        "name": "my-app", "namespace": "2105001",
     }
 
 
 def test_unknown_status_fails_closed():
     session = Mock()
-    session.request.return_value = response(200, {"status": "mystery"})
-    service = KubernetesService("http://vm:8080", session=session)
+    session.request.return_value = response(
+        200, {"status": "success", "result": "Mystery"}
+    )
+    service = KubernetesService("http://vm:5000", session=session)
     with pytest.raises(KubernetesDeploymentError, match="unknown build status"):
         service.get_status(CONFIG, "build")
+
+
+def test_deploy_request_sends_flat_resource_fields():
+    session = Mock()
+    session.request.return_value = response()
+    service = KubernetesService("http://vm:5000", session=session)
+    service.start_deploy(CONFIG)
+    payload = session.request.call_args.kwargs["json"]
+    assert payload["cpu_request"] == "100m"
+    assert payload["memory_limit"] == "256Mi"
+    assert "resources" not in payload
+
+
+def test_running_deploy_does_not_require_url_yet():
+    session = Mock()
+    session.request.return_value = response(
+        200, {"status": "success", "result": "Running"}
+    )
+    service = KubernetesService("http://vm:5000", session=session)
+    assert service.get_status(CONFIG, "deploy")["status"] == "running"
