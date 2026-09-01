@@ -5,6 +5,6 @@ database/*
 .env
 **/.env
 service-config/.env
-service-config/*.sh
+service-config/*.local.sh
 service-config/*.local.yaml
 service-config/*.secret.yaml
