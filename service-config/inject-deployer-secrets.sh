@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/.env"
-NAMESPACE="BUET-PaaS-System-Team23"
+NAMESPACE="buet-paas-system-team23"
 SECRET_NAME="paas-deployer-env"
 
 if [[ ! -f "$ENV_FILE" ]]; then

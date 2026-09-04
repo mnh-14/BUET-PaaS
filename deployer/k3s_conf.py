@@ -4,7 +4,7 @@ from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 
 
-DEFAULT_BUILDER_NAMESPACE = "BUET-PaaS-System-Team23"
+DEFAULT_BUILDER_NAMESPACE = "buet-paas-system-team23"
 DEPLOY_PRIORITY = "deployment-rank"
 BUILD_PRIORITY = "builder-rank"
 load_dotenv()
@@ -392,7 +392,7 @@ class PaaSManifestBuilder:
 
 
 class JobPipelineBuilder:
-    def __init__(self, app_name: str, builder_image: str = BUILDER_IMAGE, namespace: str = "default"):
+    def __init__(self, app_name: str, builder_image: str = BUILDER_IMAGE, namespace: str = DEFAULT_BUILDER_NAMESPACE):
         if not app_name:
             raise ValueError("CRITICAL: 'app_name' is mandatory!")
 
