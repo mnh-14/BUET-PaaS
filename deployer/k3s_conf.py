@@ -427,9 +427,6 @@ class JobPipelineBuilder:
         if DEPLOYMENT_ENVIRONMENT:
             self._env_vars["HARBOR_USER"] = HARBOR_USER
             self._env_vars["HARBOR_PASS"] = HARBOR_PASS
-        else:
-        self._env_vars["HARBOR_USER"] = HARBOR_USER
-        self._env_vars["HARBOR_PASS"] = HARBOR_PASS
 
         # if insecure:
         #     self._env_vars["EXTRA_FLAGS"] = "--insecure"
