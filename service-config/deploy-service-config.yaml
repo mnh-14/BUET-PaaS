@@ -63,8 +63,8 @@ spec:
       serviceAccountName: paas-deployer
       containers:
         - name: paas-deployer
-          image: buet-paas-deployer:latest
-          imagePullPolicy: IfNotPresent
+          image: 192.168.128.152/paas-system/paas-deployer:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 5000
               name: http
