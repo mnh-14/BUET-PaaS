@@ -6,6 +6,11 @@ Base URL:
 - Local: http://localhost:5000
 - In Kubernetes: http://<service-name>.<namespace>.svc.cluster.local
 
+Deployment service used by the integration test:
+- http://deployment-service.buet-paas-system-team23.192.168.64.121.sslip.io
+
+The integration test can override this URL with the `DEPLOYER_URL` environment variable.
+
 The deployer exposes 4 main API endpoints:
 
 1. POST /api/build
@@ -217,9 +222,14 @@ Success response:
     "ready_replicas": 2,
     "updated_replicas": 2,
     "available_replicas": 2
-  }
+  },
+  "url": "http://calculator.random-user-a.192.168.68.121.sslip.io"
 }
 ```
+
+When `result` is `Running`, the response includes `url`, which is the public URL for
+the deployed application. The `url` field is omitted for `Pending`, `Failed`, and
+`Unknown` results.
 
 Possible result values:
 - Pending

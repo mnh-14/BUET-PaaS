@@ -8,6 +8,7 @@ from kubernetes import client, config, utils
 target_builder_image = "192.168.67.192:80/paas-system/random-guy-with-app:v1.0"
 default_worker = "192.168.128.121"
 builder_namespace = "buet-paas-system-team23"
+DEFAULT_FLOATING_IP = os.getenv("DEFAULT_FLOATING_IP", "192.168.68.121")
 # destination_image = "192.168.128.4/buet-paas-student-app"
 
 _kube_error = None
@@ -301,6 +302,7 @@ def check_deploy_status(name: str, namespace: str):
                     "summary": f"Deployment '{deployment_name}' is running.",
                     "reason": condition.reason or "Available replicas are ready.",
                     "details": details,
+                    "url": f"http://{name}.{namespace}.{DEFAULT_FLOATING_IP}.sslip.io"  
                 }
             if condition.type == "Progressing" and condition.reason == "ProgressDeadlineExceeded":
                 return {
@@ -315,6 +317,7 @@ def check_deploy_status(name: str, namespace: str):
                 "summary": f"Deployment '{deployment_name}' has ready replicas.",
                 "reason": "At least one replica is ready.",
                 "details": details,
+                "url": f"http://{name}.{namespace}.{DEFAULT_FLOATING_IP}.sslip.io"  
             }
         if details["replicas"] > 0:
             return {

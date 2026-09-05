@@ -100,7 +100,7 @@ def api_deploy_status():
             raise ValueError("'name' is required.")
 
         result = check_deploy_status(name=name, namespace=namespace)
-        return jsonify({
+        response = {
             "status": "success",
             "name": name,
             "namespace": namespace,
@@ -108,7 +108,10 @@ def api_deploy_status():
             "summary": result["summary"],
             "reason": result["reason"],
             "details": result["details"],
-        })
+        }
+        if result["status"] == "Running" and result.get("url"):
+            response["url"] = result["url"]
+        return jsonify(response)
     except Exception as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
 
