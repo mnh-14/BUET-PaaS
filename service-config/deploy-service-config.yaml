@@ -58,7 +58,7 @@ spec:
       serviceAccountName: paas-deployer
       containers:
         - name: paas-deployer
-          image: 192.168.128.152/paas-system/paas-deployer:latest
+          image: 192.168.128.152/paas-system/deploy-service-image:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 5000
@@ -103,3 +103,23 @@ spec:
       targetPort: 5000
       protocol: TCP
   type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: paas-deployer-ingress
+  namespace: buet-paas-system-team23
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+spec:
+  rules:
+    - host: deployment-service.buet-paas-system-team23.192.168.128.152.sslip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: paas-deployer
+                port:
+                  number: 80

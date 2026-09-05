@@ -13,7 +13,7 @@ import yaml
 
 
 NAMESPACE = "random-user-a"
-BASE_URL = os.getenv("DEPLOYER_URL", "http://localhost:5000").rstrip("/")
+BASE_URL = os.getenv("DEPLOYER_URL", "deployment-service.buet-paas-system-team23.192.168.128.152.sslip.io").rstrip("/")
 POLL_INTERVAL_SECONDS = float(os.getenv("DEPLOYER_POLL_INTERVAL_SECONDS", "30"))
 POLL_TIMEOUT_SECONDS = float(os.getenv("DEPLOYER_POLL_TIMEOUT_SECONDS", "1800"))
 LOG_DIR = Path(__file__).resolve().parent / "log"
