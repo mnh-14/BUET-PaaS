@@ -268,7 +268,16 @@ def check_deployment_status():
         pending_states={"Pending"},
     )
 
+
 @pytest.mark.run(order=1)
+def test_health_check():
+    status, response = _post("/health", {})
+    assert status == 200
+    assert response.get("status") == "ok"
+    if status != 200 or response.get("status") != "ok":
+        pytest.exit("CRITICAL: Deployer service is not healthy; aborting tests.", returncode=1)
+
+@pytest.mark.run(order=2)
 def test_build_pipeline():
     global build_passed
     create_namespace()
@@ -289,7 +298,7 @@ def test_build_pipeline():
     build_passed = build_status == "Succeeded"
     assert build_status == "Succeeded", f"Build ended with status {build_status}"
 
-@pytest.mark.run(order=2)
+@pytest.mark.run(order=3)
 def test_deploy_pipeline():
     if build_passed is False:
         pytest.skip("Build pipeline did not succeed")
