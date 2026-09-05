@@ -72,6 +72,29 @@ def _post(path, payload):
         pytest.fail(f"Unable to reach deployer at {BASE_URL}: {exc.reason}")
 
 
+def _get(path):
+    request = Request(f"{BASE_URL}{path}", method="GET")
+    try:
+        with urlopen(request, timeout=30) as response:
+            body = response.read().decode("utf-8")
+            return response.status, json.loads(body) if body else {}
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8")
+        try:
+            details = json.loads(body)
+        except json.JSONDecodeError:
+            details = body
+        pytest.exit(
+            f"CRITICAL: GET {path} returned HTTP {exc.code}: {details}",
+            returncode=1,
+        )
+    except URLError as exc:
+        pytest.exit(
+            f"CRITICAL: Unable to reach deployer at {BASE_URL}: {exc.reason}",
+            returncode=1,
+        )
+
+
 def _poll_status(path, terminal_states, pending_states):
     deadline = time.monotonic() + POLL_TIMEOUT_SECONDS
     while True:
@@ -271,11 +294,15 @@ def check_deployment_status():
 
 @pytest.mark.run(order=1)
 def test_health_check():
-    status, response = _post("/health", {})
+    # Verify the deployer is reachable before attempting Kubernetes operations.
+    status, response = _get("/health")
+    if status != 200 or response.get("status") != "ok":
+        pytest.exit(
+            f"CRITICAL: Deployer service is not healthy: HTTP {status}, response={response}",
+            returncode=1,
+        )
     assert status == 200
     assert response.get("status") == "ok"
-    if status != 200 or response.get("status") != "ok":
-        pytest.exit("CRITICAL: Deployer service is not healthy; aborting tests.", returncode=1)
 
 @pytest.mark.run(order=2)
 def test_build_pipeline():
