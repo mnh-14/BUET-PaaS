@@ -110,7 +110,7 @@ metadata:
   name: paas-deployer-ingress
   namespace: buet-paas-system-team23
   annotations:
-    kubernetes.io/ingress.class: "nginx"
+    kubernetes.io/ingress.class: "traefik"
 spec:
   rules:
     - host: deployment-service.buet-paas-system-team23.192.168.64.121.sslip.io
