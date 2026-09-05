@@ -7,6 +7,7 @@ from kubernetes import client, config, utils
 
 target_builder_image = "192.168.67.192:80/paas-system/random-guy-with-app:v1.0"
 default_worker = "192.168.128.121"
+builder_namespace = "buet-paas-system-team23"
 # destination_image = "192.168.128.4/buet-paas-student-app"
 
 _kube_error = None
@@ -195,7 +196,7 @@ def check_build_status(name: str, namespace: str):
     try:
         job_name = f"{name}-{namespace}-build-job"
         batch_api = client.BatchV1Api(k3s_client)
-        job = batch_api.read_namespaced_job(name=job_name, namespace=namespace)
+        job = batch_api.read_namespaced_job(name=job_name, namespace=builder_namespace)
         job_status = job.status
         details = {
             "job_name": job_name,
