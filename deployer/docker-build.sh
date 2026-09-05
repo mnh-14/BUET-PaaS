@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
 IMAGE_NAME="192.168.128.152/paas-builders/deploy-service-image"
 if [ "$#" -ne 1 ]; then
     echo "Usage: $0 <image-tag>"
@@ -5,7 +7,7 @@ if [ "$#" -ne 1 ]; then
 fi
 IMAGE_TAG="$1"
 echo "Building image: $IMAGE_NAME:$IMAGE_TAG and $IMAGE_NAME:latest"
-docker build -t "$IMAGE_NAME:$IMAGE_TAG" -t "$IMAGE_NAME:latest" .
+docker build -f Dockerfile.deployer -t "$IMAGE_NAME:$IMAGE_TAG" -t "$IMAGE_NAME:latest" .
 echo "Pushing image to registry: $IMAGE_NAME:$IMAGE_TAG and $IMAGE_NAME:latest"
 docker push "$IMAGE_NAME:$IMAGE_TAG" 
 docker push "$IMAGE_NAME:latest"
