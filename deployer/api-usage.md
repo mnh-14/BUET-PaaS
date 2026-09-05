@@ -6,6 +6,13 @@ Base URL:
 - Local: http://localhost:5000
 - In Kubernetes: http://<service-name>.<namespace>.svc.cluster.local
 
+Deployment service used by the integration test:
+- http://deployment-service.buet-paas-system-team23.192.168.64.121.sslip.io
+- http://deployment-service.buet-paas-system-team23.192.168.128.200.sslip.io
+
+They are also the current deployment of deployment-service
+The integration test can override this URL with the `DEPLOYER_URL` environment variable.
+
 The deployer exposes 4 main API endpoints:
 
 1. POST /api/build
@@ -154,7 +161,15 @@ Success response:
   "status": "success",
   "name": "calculator",
   "namespace": "random-user-a",
-  "result": "Pending"
+  "result": "Pending",
+  "summary": "Build job 'calculator-random-user-a-build-job' is waiting to start.",
+  "reason": "Job has not started and has no completion result.",
+  "details": {
+    "job_name": "calculator-random-user-a-build-job",
+    "active": 0,
+    "succeeded": 0,
+    "failed": 0
+  }
 }
 ```
 
@@ -200,9 +215,23 @@ Success response:
   "status": "success",
   "name": "calculator",
   "namespace": "random-user-a",
-  "result": "Running"
+  "result": "Running",
+  "summary": "Deployment 'calculator-deployment' is running.",
+  "reason": "Available replicas are ready.",
+  "details": {
+    "deployment_name": "calculator-deployment",
+    "replicas": 2,
+    "ready_replicas": 2,
+    "updated_replicas": 2,
+    "available_replicas": 2
+  },
+  "url": "http://calculator.random-user-a.192.168.68.121.sslip.io"
 }
 ```
+
+When `result` is `Running`, the response includes `url`, which is the public URL for
+the deployed application. The `url` field is omitted for `Pending`, `Failed`, and
+`Unknown` results.
 
 Possible result values:
 - Pending

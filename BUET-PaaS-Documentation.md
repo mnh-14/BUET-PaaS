@@ -194,10 +194,11 @@ docker push 192.168.64.121/paas-builder/builder-image:latest 192.168.64.121/paas
 
 *(Placeholder — list remaining/planned work here. A few known items to seed this list with, based on team discussion and the current codebase — edit/expand freely.)*
 
+- [x] Deploy Service is up and running
 - [ ] Ready the Frontend <---> Backend <---> DB so that the required informations in `deploy.py` is properly prepared and saved
 - [ ] 💡**Proposed Soln** Resolve the "no reply" gap in the build request to K3s Cluster (step 2 above) — likely via an event bus (RabbitMQ / NATS / Kafka / Redis Streams) so each stage publishes a completion event the next stage listens for, instead of a fire-and-forget call.
 - [ ] Alternative under consideration: a sequential build-job pipeline (git pull → code scan → image gen → image scan → push to registry) that triggers deploy-service only once all steps succeed.
-- [ ] Decide how code/artifacts are shared between the image builder and the code scanner.
+- [x] Decide how code/artifacts are shared between the image builder and the code scanner.
 - [x] Wire `deployer/deploy.py` up to the Backend so `user_config` comes from real API/user input instead of a hardcoded dict.
 - [ ] Re-enable the Trivy scan step in the build Job pipeline (currently implemented but commented out in `deploy.py`).
 - [ ] Decide on and enable the security-hardening options already scaffolded in `PaaSManifestBuilder` (non-root enforcement, container-level security context, read-only rootfs) which are currently present in code but disabled/commented out.
@@ -224,5 +225,5 @@ docker push 192.168.64.121/paas-builder/builder-image:latest 192.168.64.121/paas
 
 ---
 
-*Last updated: [13.08.2026 9:40 AM] — please update this doc as the project evolves rather than letting it go stale.*
-*By Nafis: added Section 3, proposed a soln to an Issue in step 2*
+*Last updated: [05.09.2026 7:00 PM] — please update this doc as the project evolves rather than letting it go stale.*
+*By Nafis: Deploy Service is Up and Running, ready to be integrated to the backend*

@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 
 
+DEFAULT_BUILDER_NAMESPACE = "buet-paas-system-team23"
 DEPLOY_PRIORITY = "deployment-rank"
 BUILD_PRIORITY = "builder-rank"
 load_dotenv()
@@ -14,6 +15,7 @@ DEFAULT_HARBOR_IP = os.getenv("DEFAULT_HARBOR_IP", "192.168.68.121")
 DEFAULT_FLOATING_IP = os.getenv("DEFAULT_FLOATING_IP", "192.168.68.121")
 HARBOR_USER = os.getenv("HARBOR_USER", "admin")
 HARBOR_PASS = os.getenv("HARBOR_PASS", "")
+DEPLOYMENT_ENVIRONMENT: bool = os.getenv("DEPLOYMENT_ENVIRONMENT", "production").lower() == "production"
 
 class PaaSManifestBuilder:
     """
@@ -390,12 +392,13 @@ class PaaSManifestBuilder:
 
 
 class JobPipelineBuilder:
-    def __init__(self, app_name: str, builder_image: str = BUILDER_IMAGE, namespace: str = "default"):
+    def __init__(self, app_name: str, namespace: str, builder_image: str = BUILDER_IMAGE):
         if not app_name:
             raise ValueError("CRITICAL: 'app_name' is mandatory!")
 
         self.app_name = app_name.lower().strip()
         self.namespace = namespace.lower().strip()
+        self.builder_namespace = DEFAULT_BUILDER_NAMESPACE
         self.builder_image = builder_image
 
         self._script_list: List[str] = []
@@ -422,8 +425,9 @@ class JobPipelineBuilder:
         self._env_vars["DOCKERFILE_PATH"] = dockerfile_path
 
         # READS FROM THE .env FILE THAT WAS LOADED BY load_dotenv()!
-        self._env_vars["HARBOR_USER"] = HARBOR_USER
-        self._env_vars["HARBOR_PASS"] = HARBOR_PASS
+        if DEPLOYMENT_ENVIRONMENT:
+            self._env_vars["HARBOR_USER"] = HARBOR_USER
+            self._env_vars["HARBOR_PASS"] = HARBOR_PASS
 
         # if insecure:
         #     self._env_vars["EXTRA_FLAGS"] = "--insecure"
@@ -442,7 +446,7 @@ class JobPipelineBuilder:
             "kind": "Job",
             "metadata": {
                 "name": f"{self.app_name}-{self.namespace}-build-job",
-                "namespace": self.namespace,
+                "namespace": self.builder_namespace,
                 "labels": {
                     "app": self.app_name,
                     "paas-stage": "build-job",
@@ -461,6 +465,7 @@ class JobPipelineBuilder:
                             "image": self.builder_image,
                             "command": ["/bin/bash", "-e", "-c"],
                             "args": [multiline_script_block],
+                            "envFrom": [{"secretRef": {"name": "paas-deployer-env"}}],
                             "env": [{"name": k, "value": str(v)} for k, v in self._env_vars.items()],
                             "resources": {
                                 "requests": {

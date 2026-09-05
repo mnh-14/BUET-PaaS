@@ -1,6 +1,12 @@
 from flask import Flask, jsonify, request
 
-from deploy import build_image, deploy_application, check_build_status, check_deploy_status
+from deploy import (
+    build_image,
+    check_build_status,
+    check_deploy_status,
+    create_namespace_if_not_exists,
+    deploy_application,
+)
 
 app = Flask(__name__)
 
@@ -66,12 +72,15 @@ def api_build_status():
         if not name:
             raise ValueError("'name' is required.")
 
-        status = check_build_status(name=name, namespace=namespace)
+        result = check_build_status(name=name, namespace=namespace)
         return jsonify({
             "status": "success",
             "name": name,
             "namespace": namespace,
-            "result": status,
+            "result": result["status"],
+            "summary": result["summary"],
+            "reason": result["reason"],
+            "details": result["details"],
         })
     except Exception as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
@@ -90,13 +99,19 @@ def api_deploy_status():
         if not name:
             raise ValueError("'name' is required.")
 
-        status = check_deploy_status(name=name, namespace=namespace)
-        return jsonify({
+        result = check_deploy_status(name=name, namespace=namespace)
+        response = {
             "status": "success",
             "name": name,
             "namespace": namespace,
-            "result": status,
-        })
+            "result": result["status"],
+            "summary": result["summary"],
+            "reason": result["reason"],
+            "details": result["details"],
+        }
+        if result["status"] == "Running" and result.get("url"):
+            response["url"] = result["url"]
+        return jsonify(response)
     except Exception as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
 
@@ -118,8 +133,7 @@ def api_create_namespace():
         if not namespace:
             raise ValueError("'namespace' is required.")
 
-        # Here you would implement the logic to create the namespace
-        # For demonstration purposes, we'll just return a success message
+        create_namespace_if_not_exists(namespace)
         return jsonify({
             "status": "success",
             "message": f"Namespace '{namespace}' created successfully.",
