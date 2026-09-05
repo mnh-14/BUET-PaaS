@@ -72,12 +72,15 @@ def api_build_status():
         if not name:
             raise ValueError("'name' is required.")
 
-        status = check_build_status(name=name, namespace=namespace)
+        result = check_build_status(name=name, namespace=namespace)
         return jsonify({
             "status": "success",
             "name": name,
             "namespace": namespace,
-            "result": status,
+            "result": result["status"],
+            "summary": result["summary"],
+            "reason": result["reason"],
+            "details": result["details"],
         })
     except Exception as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
@@ -96,12 +99,15 @@ def api_deploy_status():
         if not name:
             raise ValueError("'name' is required.")
 
-        status = check_deploy_status(name=name, namespace=namespace)
+        result = check_deploy_status(name=name, namespace=namespace)
         return jsonify({
             "status": "success",
             "name": name,
             "namespace": namespace,
-            "result": status,
+            "result": result["status"],
+            "summary": result["summary"],
+            "reason": result["reason"],
+            "details": result["details"],
         })
     except Exception as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400

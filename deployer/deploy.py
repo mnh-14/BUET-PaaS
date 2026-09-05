@@ -180,64 +180,168 @@ def rollback_application(user_config: Dict[str, Any]):
 
 
 def check_build_status(name: str, namespace: str):
-    """Return one of: 'Pending', 'Running', 'Succeeded', 'Failed', 'Unknown'."""
+    """Return build status together with a human-readable summary and reason."""
     if not name or not namespace:
         raise ValueError("Both 'name' and 'namespace' are required.")
 
     if k3s_client is None:
-        return "Unknown"
+        return {
+            "status": "Unknown",
+            "summary": "The build status could not be checked.",
+            "reason": "Kubernetes client is not initialized.",
+            "details": {},
+        }
 
     try:
         job_name = f"{name}-{namespace}-build-job"
         batch_api = client.BatchV1Api(k3s_client)
         job = batch_api.read_namespaced_job(name=job_name, namespace=namespace)
+        job_status = job.status
+        details = {
+            "job_name": job_name,
+            "active": getattr(job_status, "active", 0) or 0,
+            "succeeded": getattr(job_status, "succeeded", 0) or 0,
+            "failed": getattr(job_status, "failed", 0) or 0,
+            "start_time": str(getattr(job_status, "start_time", None)),
+            "completion_time": str(getattr(job_status, "completion_time", None)),
+        }
 
-        if getattr(job.status, "succeeded", 0):
-            return "Succeeded"
-        if getattr(job.status, "failed", 0):
-            return "Failed"
-        if getattr(job.status, "active", 0):
-            return "Running"
-        return "Pending"
+        if details["succeeded"]:
+            return {
+                "status": "Succeeded",
+                "summary": f"Build job '{job_name}' completed successfully.",
+                "reason": "Job completed successfully.",
+                "details": details,
+            }
+        if details["failed"]:
+            conditions = [
+                condition.to_dict() if hasattr(condition, "to_dict") else str(condition)
+                for condition in (getattr(job_status, "conditions", None) or [])
+            ]
+            details["conditions"] = conditions
+            return {
+                "status": "Failed",
+                "summary": f"Build job '{job_name}' failed.",
+                "reason": conditions[0].get("reason", "Job reported failed") if conditions and isinstance(conditions[0], dict) else "Job reported failed.",
+                "details": details,
+            }
+        if details["active"]:
+            return {
+                "status": "Running",
+                "summary": f"Build job '{job_name}' is currently running.",
+                "reason": "Job has active pods.",
+                "details": details,
+            }
+        return {
+            "status": "Pending",
+            "summary": f"Build job '{job_name}' is waiting to start.",
+            "reason": "Job has not started and has no completion result.",
+            "details": details,
+        }
     except client.exceptions.ApiException as exc:
         if exc.status == 404:
-            return "Unknown"
-        print(f"Exception when checking build status: {exc}")
-        return "Unknown"
+            return {
+                "status": "Unknown",
+                "summary": f"Build job '{job_name}' was not found.",
+                "reason": f"Kubernetes returned HTTP 404 in namespace '{namespace}'.",
+                "details": {"job_name": job_name, "http_status": exc.status},
+            }
+        return {
+            "status": "Unknown",
+            "summary": f"Unable to read build job '{job_name}'.",
+            "reason": str(exc),
+            "details": {"job_name": job_name, "http_status": exc.status},
+        }
 
 
 def check_deploy_status(name: str, namespace: str):
-    """Return one of: 'Pending', 'Running', 'Succeeded', 'Failed', 'Unknown'."""
+    """Return deployment status together with a human-readable summary and reason."""
     if not name or not namespace:
         raise ValueError("Both 'name' and 'namespace' are required.")
 
     if k3s_client is None:
-        return "Unknown"
+        return {
+            "status": "Unknown",
+            "summary": "The deployment status could not be checked.",
+            "reason": "Kubernetes client is not initialized.",
+            "details": {},
+        }
 
     try:
         deployment_name = f"{name}-deployment"
         app_api = client.AppsV1Api(k3s_client)
         deployment = app_api.read_namespaced_deployment(name=deployment_name, namespace=namespace)
         status = deployment.status
+        details = {
+            "deployment_name": deployment_name,
+            "replicas": getattr(status, "replicas", 0) or 0 if status else 0,
+            "ready_replicas": getattr(status, "ready_replicas", 0) or 0 if status else 0,
+            "updated_replicas": getattr(status, "updated_replicas", 0) or 0 if status else 0,
+            "available_replicas": getattr(status, "available_replicas", 0) or 0 if status else 0,
+        }
 
         if status is None:
-            return "Unknown"
-        if status.conditions:
-            for condition in status.conditions:
-                if condition.type == "Available" and condition.status == "True":
-                    return "Running"
-                if condition.type == "Progressing" and condition.reason == "ProgressDeadlineExceeded":
-                    return "Failed"
-        if status.ready_replicas and status.ready_replicas > 0:
-            return "Running"
-        if status.replicas and status.replicas > 0:
-            return "Pending"
-        return "Unknown"
+            return {
+                "status": "Unknown",
+                "summary": f"Deployment '{deployment_name}' has no status yet.",
+                "reason": "Kubernetes returned an empty deployment status.",
+                "details": details,
+            }
+
+        conditions = status.conditions or []
+        details["conditions"] = [
+            condition.to_dict() if hasattr(condition, "to_dict") else str(condition)
+            for condition in conditions
+        ]
+        for condition in conditions:
+            if condition.type == "Available" and condition.status == "True":
+                return {
+                    "status": "Running",
+                    "summary": f"Deployment '{deployment_name}' is running.",
+                    "reason": condition.reason or "Available replicas are ready.",
+                    "details": details,
+                }
+            if condition.type == "Progressing" and condition.reason == "ProgressDeadlineExceeded":
+                return {
+                    "status": "Failed",
+                    "summary": f"Deployment '{deployment_name}' failed to become ready.",
+                    "reason": condition.message or condition.reason,
+                    "details": details,
+                }
+        if details["ready_replicas"] > 0:
+            return {
+                "status": "Running",
+                "summary": f"Deployment '{deployment_name}' has ready replicas.",
+                "reason": "At least one replica is ready.",
+                "details": details,
+            }
+        if details["replicas"] > 0:
+            return {
+                "status": "Pending",
+                "summary": f"Deployment '{deployment_name}' is waiting for replicas.",
+                "reason": "Replicas exist but none are ready yet.",
+                "details": details,
+            }
+        return {
+            "status": "Unknown",
+            "summary": f"Deployment '{deployment_name}' has no active replicas.",
+            "reason": "No ready or desired replicas were reported.",
+            "details": details,
+        }
     except client.exceptions.ApiException as exc:
         if exc.status == 404:
-            return "Unknown"
-        print(f"Exception when checking deploy status: {exc}")
-        return "Unknown"
+            return {
+                "status": "Unknown",
+                "summary": f"Deployment '{deployment_name}' was not found.",
+                "reason": f"Kubernetes returned HTTP 404 in namespace '{namespace}'.",
+                "details": {"deployment_name": deployment_name, "http_status": exc.status},
+            }
+        return {
+            "status": "Unknown",
+            "summary": f"Unable to read deployment '{deployment_name}'.",
+            "reason": str(exc),
+            "details": {"deployment_name": deployment_name, "http_status": exc.status},
+        }
 
 
 def create_namespace_if_not_exists(namespace: str):

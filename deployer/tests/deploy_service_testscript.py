@@ -12,7 +12,7 @@ from kubernetes.stream import stream
 import yaml
 
 
-NAMESPACE = "random-user-a"
+NAMESPACE = "test-user-001"
 BASE_URL = os.getenv(
 	"DEPLOYER_URL",
 	"http://deployment-service.buet-paas-system-team23.192.168.64.121.sslip.io",
@@ -20,6 +20,8 @@ BASE_URL = os.getenv(
 POLL_INTERVAL_SECONDS = float(os.getenv("DEPLOYER_POLL_INTERVAL_SECONDS", "30"))
 POLL_TIMEOUT_SECONDS = float(os.getenv("DEPLOYER_POLL_TIMEOUT_SECONDS", "1800"))
 LOG_DIR = Path(__file__).resolve().parent / "log"
+RUN_TIMESTAMP = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+PROGRESS_LOG_PATH = LOG_DIR / f"progress-{RUN_TIMESTAMP}.txt"
 
 
 user_config = {
@@ -39,13 +41,22 @@ user_config = {
 
 
 def _fail(message):
-	"""Print the only normal script output: a concise failure statement."""
-	print(f"FAIL: {message}")
+	"""Print and persist a failure statement."""
+	_write_progress(f"FAIL: {message}")
 
 
 def _progress(message):
-	"""Print a short description of the current test phase."""
-	print(f"[INFO] {message}")
+	"""Print and persist a short description of the current test phase."""
+	_write_progress(f"[INFO] {message}")
+
+
+def _write_progress(message):
+	"""Write one progress line to the terminal and this run's progress log."""
+	LOG_DIR.mkdir(parents=True, exist_ok=True)
+	line = f"{datetime.now(timezone.utc).isoformat()} {message}"
+	print(line)
+	with PROGRESS_LOG_PATH.open("a", encoding="utf-8") as progress_file:
+		progress_file.write(line + "\n")
 
 
 def _load_kube_client():
@@ -107,11 +118,17 @@ def _poll_status(path, terminal_states, pending_states):
 			return "Unknown"
 
 		status = response.get("result")
+		summary = response.get("summary", "No summary returned by the API.")
+		reason = response.get("reason", "No reason returned by the API.")
+		details = response.get("details") or {}
 		if status != last_status:
-			_progress(f"{path} status: {status}")
+			_progress(
+				f"{path} status: {status}; summary: {summary}; "
+				f"reason: {reason}; details: {json.dumps(details, default=str, sort_keys=True)}"
+			)
 			last_status = status
 		if status in terminal_states:
-			_progress(f"{path} reached terminal status: {status}")
+			_progress(f"{path} reached terminal status: {status} ({summary})")
 			return status
 		if status not in pending_states:
 			return status or "Unknown"
@@ -277,7 +294,7 @@ def _write_pod_diagnostics(api, label_selector, filename, parent_reader=None, pa
 
 
 def _diagnostic_timestamp():
-	return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+	return RUN_TIMESTAMP
 
 
 def create_namespace():
@@ -395,7 +412,15 @@ def test_deploy_pipeline():
 
 def main():
 	"""Run health, build, and deploy tests sequentially."""
-	_progress("Starting deployment service test script")
+	LOG_DIR.mkdir(parents=True, exist_ok=True)
+	PROGRESS_LOG_PATH.write_text(
+		"BUET-PaaS Deployment Service Progress Log\n"
+		f"Run started: {datetime.now(timezone.utc).isoformat()}\n"
+		f"Deployer URL: {BASE_URL}\n"
+		f"Namespace: {NAMESPACE}\n\n",
+		encoding="utf-8",
+	)
+	_progress(f"Starting deployment service test script; progress log: {PROGRESS_LOG_PATH}")
 	if not test_health_check():
 		return 1
 	if not test_build_pipeline():

@@ -154,7 +154,15 @@ Success response:
   "status": "success",
   "name": "calculator",
   "namespace": "random-user-a",
-  "result": "Pending"
+  "result": "Pending",
+  "summary": "Build job 'calculator-random-user-a-build-job' is waiting to start.",
+  "reason": "Job has not started and has no completion result.",
+  "details": {
+    "job_name": "calculator-random-user-a-build-job",
+    "active": 0,
+    "succeeded": 0,
+    "failed": 0
+  }
 }
 ```
 
@@ -200,7 +208,16 @@ Success response:
   "status": "success",
   "name": "calculator",
   "namespace": "random-user-a",
-  "result": "Running"
+  "result": "Running",
+  "summary": "Deployment 'calculator-deployment' is running.",
+  "reason": "Available replicas are ready.",
+  "details": {
+    "deployment_name": "calculator-deployment",
+    "replicas": 2,
+    "ready_replicas": 2,
+    "updated_replicas": 2,
+    "available_replicas": 2
+  }
 }
 ```
 
