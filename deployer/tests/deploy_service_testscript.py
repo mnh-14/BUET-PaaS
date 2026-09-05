@@ -13,6 +13,7 @@ import yaml
 
 
 NAMESPACE = "test-user-001"
+BUILD_NAMESPACE = "buet-paas-system-team23"
 BASE_URL = os.getenv(
 	"DEPLOYER_URL",
 	"http://deployment-service.buet-paas-system-team23.192.168.64.121.sslip.io",

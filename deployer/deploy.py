@@ -144,7 +144,7 @@ def build_image(user_config: Dict[str, Any]):
     if not isinstance(user_config, dict):
         raise ValueError("user_config must be a dictionary")
     _require_kube_client()
-    builder = JobPipelineBuilder(app_name=user_config["app_name"])
+    builder = JobPipelineBuilder(app_name=user_config["app_name"], namespace=user_config["namespace"])
     builder.apply_git_cloner(git_url=user_config["git_url"], branch=user_config.get("git_branch", "main"))
     # builder.apply_trivy_scan(severity="CRITICAL,HIGH", fail_on_cve=True)
     user_config["image"] = f"{user_config['app_name']}-{user_config['namespace']}-build:latest"

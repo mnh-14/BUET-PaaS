@@ -392,12 +392,13 @@ class PaaSManifestBuilder:
 
 
 class JobPipelineBuilder:
-    def __init__(self, app_name: str, builder_image: str = BUILDER_IMAGE, namespace: str = DEFAULT_BUILDER_NAMESPACE):
+    def __init__(self, app_name: str, namespace: str, builder_image: str = BUILDER_IMAGE):
         if not app_name:
             raise ValueError("CRITICAL: 'app_name' is mandatory!")
 
         self.app_name = app_name.lower().strip()
         self.namespace = namespace.lower().strip()
+        self.builder_namespace = DEFAULT_BUILDER_NAMESPACE
         self.builder_image = builder_image
 
         self._script_list: List[str] = []
@@ -445,7 +446,7 @@ class JobPipelineBuilder:
             "kind": "Job",
             "metadata": {
                 "name": f"{self.app_name}-{self.namespace}-build-job",
-                "namespace": self.namespace,
+                "namespace": self.builder_namespace,
                 "labels": {
                     "app": self.app_name,
                     "paas-stage": "build-job",
