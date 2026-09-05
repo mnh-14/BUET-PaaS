@@ -8,7 +8,9 @@ Base URL:
 
 Deployment service used by the integration test:
 - http://deployment-service.buet-paas-system-team23.192.168.64.121.sslip.io
+- http://deployment-service.buet-paas-system-team23.192.168.128.200.sslip.io
 
+They are also the current deployment of deployment-service
 The integration test can override this URL with the `DEPLOYER_URL` environment variable.
 
 The deployer exposes 4 main API endpoints:
