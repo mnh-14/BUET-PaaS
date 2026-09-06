@@ -44,7 +44,9 @@ def build_deployer_config(project: dict, deployment: dict) -> dict[str, Any]:
     size = project.get("instance_size", "small")
     if size not in RESOURCE_TIERS:
         raise ValueError(f"Unknown instance size: {size}")
-    namespace = kubernetes_name(str(project["user_id"]))
+    namespace = kubernetes_name(
+        str(project.get("namespace") or project["user_id"])
+    )
     app_name = kubernetes_name(project.get("app_name") or project["project_name"])
     image_name = f"{app_name}-{namespace}-build:latest"
     return {

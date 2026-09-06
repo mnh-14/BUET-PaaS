@@ -38,7 +38,7 @@ from deployment_config import (
     build_deployer_config,
     kubernetes_name,
 )
-from kubernetes_service import KubernetesService
+from kubernetes_service import KubernetesDeploymentError, KubernetesService
 from github_app import GitHubAppService
 from github_routes import create_github_router
 from services.sonarqube_service import (
@@ -648,6 +648,7 @@ def create_user(body: UserCreate):
     Document stored in users collection:
     {
         user_id:        "2105085"
+        namespace:      "2105085"
         name:           "Suprio Paul"
         email:          "2105085@cse.buet.ac.bd"
         password_hash:  "sha256_hashed_string"   ← never store plain password
@@ -669,8 +670,22 @@ def create_user(body: UserCreate):
             detail=f"Email {body.email} is already registered."
         )
 
+    try:
+        namespace = kubernetes_name(body.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    try:
+        KubernetesService().create_namespace(namespace)
+    except KubernetesDeploymentError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Could not provision the user's Kubernetes namespace: {exc}",
+        ) from None
+
     users_col().insert_one({
         "user_id":        body.user_id,
+        "namespace":      namespace,
         "name":           body.name,
         "email":          body.email,
         "password_hash":  hash_password(body.password),
@@ -681,7 +696,8 @@ def create_user(body: UserCreate):
     return {
         "message":  "User registered successfully.",
         "user_id":  body.user_id,
-        "name":     body.name
+        "name":     body.name,
+        "namespace": namespace,
     }
 
 
@@ -821,7 +837,7 @@ def create_project(
         }
 
     app_name = kubernetes_name(body.project_name)
-    namespace = kubernetes_name(user["user_id"])
+    namespace = kubernetes_name(user.get("namespace") or user["user_id"])
     if projects_col().find_one({"namespace": namespace, "app_name": app_name}):
         raise HTTPException(
             status_code=409,

@@ -69,7 +69,7 @@ class KubernetesService:
             raise KubernetesDeploymentError(
                 "The Kubernetes deployment service is unavailable"
             ) from exc
-        if response.status_code not in {200, 202}:
+        if not 200 <= response.status_code < 300:
             raise KubernetesDeploymentError(
                 f"The Kubernetes deployment service returned HTTP {response.status_code}"
             )
@@ -84,6 +84,13 @@ class KubernetesService:
                 "The Kubernetes deployment service returned an invalid response"
             )
         return body
+
+    def create_namespace(self, namespace: str) -> dict[str, Any]:
+        result = self._request(
+            "POST", "/api/namespace", json={"namespace": namespace}
+        )
+        self._require_success(result, "namespace creation")
+        return result
 
     def start_build(
         self, config: dict[str, Any], github_token: str | None = None

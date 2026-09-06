@@ -34,6 +34,26 @@ def test_build_request_sends_private_token_only_in_body():
     assert call.kwargs["json"]["namespace"] == "2105001"
 
 
+def test_namespace_creation_accepts_created_response():
+    session = Mock()
+    session.request.return_value = response(
+        201,
+        {
+            "status": "success",
+            "message": "Namespace created successfully.",
+            "namespace": "2105001",
+        },
+    )
+    service = KubernetesService("http://vm:5000", session=session)
+
+    result = service.create_namespace("2105001")
+
+    assert result["namespace"] == "2105001"
+    call = session.request.call_args
+    assert call.args[:2] == ("POST", "http://vm:5000/api/namespace")
+    assert call.kwargs["json"] == {"namespace": "2105001"}
+
+
 def test_status_query_contains_operation_and_identity():
     session = Mock()
     session.request.return_value = response(

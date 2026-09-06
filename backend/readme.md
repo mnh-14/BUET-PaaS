@@ -4,7 +4,7 @@ The FastAPI backend owns authentication, GitHub App access, on-demand commit che
 
 ## Deployment flow
 
-1. A user connects the GitHub App and creates a project by selecting a repository, branch, project name, size, and optional runtime environment variables.
+1. Signup provisions a DNS-safe Kubernetes namespace through `POST /api/namespace`. A user then connects the GitHub App and creates a project by selecting a repository, branch, project name, size, and optional runtime environment variables.
 2. Project creation stores configuration only; it does not deploy automatically.
 3. `POST /api/v1/projects/{project_id}/check-update` asks GitHub for the selected branch head and compares it with `last_deployed_sha`.
 4. `POST /api/v1/deployments/redeploy/{project_id}` resolves the head again, clones it with a short-lived installation token, and runs the SonarQube quality gate.
@@ -23,6 +23,7 @@ The current Flask service listens on port `5000`; set `KUBERNETES_DEPLOYER_URL=h
 - `POST /api/deploy` accepts the flat application config, including image, container port, replicas, individual CPU/RAM fields, environment variables, grace period, and read-only-root setting. It returns HTTP 202 with `status: success`.
 - `POST /api/build/status` accepts `{name, namespace}` and returns `result` as `Pending`, `Running`, `Succeeded`, `Failed`, or `Unknown`.
 - `POST /api/deploy/status` accepts `{name, namespace}` and returns `result` as `Pending`, `Running`, `Failed`, or `Unknown`.
+- `POST /api/namespace` accepts `{namespace}` and idempotently ensures the user namespace exists.
 - `GET /health` is recommended for operations, although the application workflow does not depend on it.
 
 The backend maps these results to `build_queued`, `build_started`, `build_done`, `deploy_queued`, `running`, or `failed`; SSE forwards MongoDB changes to the browser. The current deploy status cannot distinguish `deploy_started`, and the live URL will be generated later when its pattern is finalized. Restart safety still requires the service's create operations to become idempotent. Private Kubernetes-side Git cloning also still requires the deployer to consume the short-lived `github_auth` sent by the backend.
