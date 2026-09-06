@@ -466,7 +466,7 @@ def clone_repository(
                 "BUETPAAS_GIT_TOKEN": token,
             })
         result = subprocess.run(
-            ["git", "clone", "--no-checkout", "--filter=blob:none", repo_url, work_dir],
+            ["git", "clone", "--no-checkout", repo_url, work_dir],
             capture_output=True,
             text=True,
             timeout=GIT_CLONE_TIMEOUT_SECONDS,
