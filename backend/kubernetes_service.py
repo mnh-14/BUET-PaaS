@@ -8,7 +8,19 @@ import requests
 
 
 class KubernetesDeploymentError(RuntimeError):
-    pass
+    """Safe, structured failure returned by the deployment-service client."""
+
+    def __init__(
+        self,
+        summary: str,
+        *,
+        reason: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(summary)
+        self.summary = summary
+        self.reason = reason or summary
+        self.details = details or {}
 
 
 class KubernetesService:
@@ -65,23 +77,55 @@ class KubernetesService:
                 timeout=self.request_timeout,
                 **kwargs,
             )
+        except requests.Timeout as exc:
+            raise KubernetesDeploymentError(
+                "The Kubernetes deployment service timed out",
+                reason=(
+                    f"No response was received for {path} within "
+                    f"{self.request_timeout:g} seconds."
+                ),
+                details={"endpoint": path, "timeout_seconds": self.request_timeout},
+            ) from exc
+        except requests.ConnectionError as exc:
+            raise KubernetesDeploymentError(
+                "The Kubernetes deployment service is unreachable",
+                reason="The backend could not establish a connection to the deployment service.",
+                details={"endpoint": path},
+            ) from exc
         except requests.RequestException as exc:
             raise KubernetesDeploymentError(
-                "The Kubernetes deployment service is unavailable"
+                "The Kubernetes deployment service request failed",
+                reason="The HTTP request ended before a valid response was received.",
+                details={"endpoint": path},
             ) from exc
-        if not 200 <= response.status_code < 300:
-            raise KubernetesDeploymentError(
-                f"The Kubernetes deployment service returned HTTP {response.status_code}"
-            )
+
         try:
             body = response.json()
         except ValueError as exc:
+            if not 200 <= response.status_code < 300:
+                raise KubernetesDeploymentError(
+                    "The Kubernetes deployment service rejected the request",
+                    reason=f"The service returned HTTP {response.status_code} without JSON details.",
+                    details={"endpoint": path, "http_status": response.status_code},
+                ) from exc
             raise KubernetesDeploymentError(
-                "The Kubernetes deployment service returned invalid JSON"
+                "The Kubernetes deployment service returned invalid JSON",
+                reason="The service responded successfully, but its response was not valid JSON.",
+                details={"endpoint": path, "http_status": response.status_code},
             ) from exc
+
+        if not 200 <= response.status_code < 300:
+            api_message = body.get("message") if isinstance(body, dict) else None
+            raise KubernetesDeploymentError(
+                "The Kubernetes deployment service rejected the request",
+                reason=str(api_message or f"The service returned HTTP {response.status_code}."),
+                details={"endpoint": path, "http_status": response.status_code},
+            )
         if not isinstance(body, dict):
             raise KubernetesDeploymentError(
-                "The Kubernetes deployment service returned an invalid response"
+                "The Kubernetes deployment service returned an invalid response",
+                reason="The response JSON must be an object.",
+                details={"endpoint": path, "http_status": response.status_code},
             )
         return body
 
@@ -136,7 +180,8 @@ class KubernetesService:
     def _require_success(result: dict[str, Any], operation: str) -> None:
         if result.get("status") != "success":
             raise KubernetesDeploymentError(
-                str(result.get("message") or f"The {operation} request was rejected")
+                f"Kubernetes {operation} request was rejected",
+                reason=str(result.get("message") or "The service did not report success."),
             )
 
     def get_status(self, config: dict[str, Any], operation: str) -> dict[str, Any]:
@@ -152,7 +197,9 @@ class KubernetesService:
         status_map = self.BUILD_STATUS_MAP if operation == "build" else self.DEPLOY_STATUS_MAP
         if raw_status not in status_map:
             raise KubernetesDeploymentError(
-                f"The deployment service returned an unknown {operation} status"
+                f"The deployment service returned an unknown {operation} status",
+                reason=f"Received result value {raw_status!r}.",
+                details={"operation": operation, "result": raw_status},
             )
         return {**result, "raw_status": raw_status, "status": status_map[raw_status]}
 
@@ -166,10 +213,12 @@ class KubernetesService:
         deadline = time.monotonic() + timeout
         previous_status = None
         consecutive_errors = 0
+        last_result: dict[str, Any] | None = None
         while time.monotonic() < deadline:
             try:
                 result = self.get_status(config, operation)
                 consecutive_errors = 0
+                last_result = result
             except KubernetesDeploymentError:
                 consecutive_errors += 1
                 if consecutive_errors >= 3:
@@ -181,8 +230,19 @@ class KubernetesService:
                 time.sleep(self.poll_interval)
                 continue
             if status == "failed":
+                api_summary = result.get("summary")
+                api_reason = result.get("reason")
                 raise KubernetesDeploymentError(
-                    str(result.get("error") or result.get("message") or f"{operation.title()} failed")
+                    str(api_summary or f"Kubernetes {operation} failed"),
+                    reason=str(
+                        api_reason
+                        or result.get("error")
+                        or result.get("message")
+                        or f"The Kubernetes {operation} reported failure."
+                    ),
+                    details=result.get("details")
+                    if isinstance(result.get("details"), dict)
+                    else {},
                 )
             if status != previous_status:
                 on_update(result)
@@ -192,4 +252,18 @@ class KubernetesService:
             ):
                 return result
             time.sleep(self.poll_interval)
-        raise KubernetesDeploymentError(f"Kubernetes {operation} status timed out")
+        reason = f"The {operation} did not reach a successful state within {timeout:g} seconds."
+        details: dict[str, Any] = {"operation": operation, "timeout_seconds": timeout}
+        if last_result:
+            if last_result.get("summary"):
+                reason = f"{reason} Last update: {last_result['summary']}"
+            if last_result.get("reason"):
+                details["last_reason"] = last_result["reason"]
+            if isinstance(last_result.get("details"), dict):
+                details["last_details"] = last_result["details"]
+            details["last_status"] = last_result.get("raw_status")
+        raise KubernetesDeploymentError(
+            f"Kubernetes {operation} status timed out",
+            reason=reason,
+            details=details,
+        )

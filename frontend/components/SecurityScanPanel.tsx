@@ -24,6 +24,7 @@ function conditionText(condition: SecurityScanCondition): string {
 
 export default function SecurityScanPanel({ deployment }: { deployment: Deployment }) {
   const scan = deployment.security_scan;
+  const failure = deployment.failure;
   const securityFailure =
     deployment.status === "security_scan_failed" || scan?.status === "failed";
   const scanError =
@@ -56,12 +57,19 @@ export default function SecurityScanPanel({ deployment }: { deployment: Deployme
     <div className="mt-6 p-4 bg-red-900/20 border border-red-800/50 rounded-xl space-y-4">
       <div>
         <h3 className="font-mono font-bold text-red-300 text-sm">
-          {securityFailure ? "Deployment blocked by security scan" : "Security scan could not complete"}
+          {failure?.title ?? (securityFailure ? "Deployment blocked by security scan" : "Security scan could not complete")}
         </h3>
         <p className="text-xs text-red-200/80 mt-1">
-          {scan?.error ?? deployment.error_summary ?? "SonarQube did not return a usable analysis result."}
+          {failure?.summary ?? scan?.error ?? deployment.error_summary ?? "SonarQube did not return a usable analysis result."}
         </p>
       </div>
+
+      {failure?.reason && failure.reason !== failure.summary && (
+        <div className="bg-black/20 rounded-lg px-3 py-2.5">
+          <h4 className="text-[10px] font-mono uppercase tracking-wider text-gray-500 mb-1">Why it failed</h4>
+          <p className="text-xs text-gray-200">{failure.reason}</p>
+        </div>
+      )}
 
       {failedConditions.length > 0 && (
         <div>
@@ -103,7 +111,7 @@ export default function SecurityScanPanel({ deployment }: { deployment: Deployme
 
       <div className="text-xs text-gray-400 border-t border-red-900/30 pt-3">
         <p>
-          Fix the reported code, push a new commit, and redeploy. Do not weaken the Quality Gate unless the security policy itself is intentionally changing.
+          {failure?.suggestion ?? "Fix the reported code, push a new commit, and redeploy. Do not weaken the Quality Gate unless the security policy itself is intentionally changing."}
         </p>
         {scan?.analysis_url && (
           <a

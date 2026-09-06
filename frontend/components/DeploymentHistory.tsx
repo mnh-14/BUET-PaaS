@@ -61,9 +61,12 @@ export default function DeploymentHistory({
                 {new Date(d.deployed_at).toLocaleString()}
               </td>
               <td className="py-2.5 px-3 text-xs text-red-400 max-w-[200px]">
-                {d.error_summary ? (
-                  <span className="truncate block" title={d.error_summary}>
-                    {d.error_summary}
+                {d.failure?.summary || d.error_summary ? (
+                  <span
+                    className="truncate block"
+                    title={d.failure?.reason ?? d.failure?.summary ?? d.error_summary}
+                  >
+                    {d.failure?.summary ?? d.error_summary}
                   </span>
                 ) : (
                   <span className="text-gray-600">—</span>

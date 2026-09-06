@@ -117,6 +117,14 @@ def statuses(collection):
     ]
 
 
+def failures(collection):
+    return [
+        update["$set"]["failure"]
+        for _, update in collection.updates
+        if update.get("$set", {}).get("failure")
+    ]
+
+
 def test_successful_pipeline_scans_before_kubernetes_build_and_deploy(monkeypatch):
     events, deployments = install_pipeline_fakes(monkeypatch, result())
     run_deployment()
@@ -135,6 +143,8 @@ def test_scanner_error_stops_before_kubernetes(monkeypatch):
     run_deployment()
     assert events == ["clone", "checkout", "scan"]
     assert statuses(deployments)[-1] == "security_scan_error"
+    assert failures(deployments)[-1]["source"] == "sonarqube"
+    assert failures(deployments)[-1]["reason"]
 
 
 def test_quality_gate_failure_stops_before_kubernetes(monkeypatch):
@@ -142,6 +152,8 @@ def test_quality_gate_failure_stops_before_kubernetes(monkeypatch):
     run_deployment()
     assert events == ["clone", "checkout", "scan"]
     assert statuses(deployments)[-1] == "security_scan_failed"
+    assert failures(deployments)[-1]["title"] == "SonarQube Quality Gate failed"
+    assert failures(deployments)[-1]["suggestion"]
 
 
 def test_disabled_scanning_preserves_kubernetes_pipeline(monkeypatch):

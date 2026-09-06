@@ -23,9 +23,20 @@ export interface Deployment {
   resources?: DeploymentResources;
   public_url?: string;
   error_summary?: string;
+  failure?: DeploymentFailure | null;
   commit_sha?: string;
   security_scan?: SecurityScan;
   deployed_at: string;
+}
+
+export interface DeploymentFailure {
+  source: "git" | "sonarqube" | "kubernetes" | "backend";
+  stage: string;
+  title: string;
+  summary: string;
+  reason?: string;
+  suggestion?: string;
+  details?: Record<string, unknown>;
 }
 
 export interface SecurityScanCondition {

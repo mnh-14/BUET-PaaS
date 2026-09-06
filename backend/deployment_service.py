@@ -34,6 +34,7 @@ def queue_deployment(
         "trigger": trigger,
         "status": "queued",
         "error_summary": None,
+        "failure": None,
         "public_url": None,
         "instance_size": project.get("instance_size", "small"),
         "deployed_at": now,

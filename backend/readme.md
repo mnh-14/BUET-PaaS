@@ -28,6 +28,8 @@ The current Flask service listens on port `5000`; set `KUBERNETES_DEPLOYER_URL=h
 
 The backend maps these results to `build_queued`, `build_started`, `build_done`, `deploy_queued`, `running`, or `failed`; SSE forwards MongoDB changes to the browser. The current deploy status cannot distinguish `deploy_started`, and the live URL will be generated later when its pattern is finalized. Restart safety still requires the service's create operations to become idempotent. Private Kubernetes-side Git cloning also still requires the deployer to consume the short-lived `github_auth` sent by the backend.
 
+Failed deployments retain the backward-compatible `error_summary` and also expose a structured `failure` object containing the responsible service, failed stage, user-safe summary, reason, suggested action, and bounded technical details. SonarQube credentials and unexpected internal tracebacks are never included.
+
 ## Project inputs
 
 - GitHub App installation and repository

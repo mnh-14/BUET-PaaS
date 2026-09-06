@@ -239,7 +239,7 @@ class SonarQubeService:
                 analysis_url=analysis_url,
             )
 
-        error = self._classify_scanner_failure(lowered)
+        error = self._classify_scanner_failure(output)
         logger.error("Scanner failed (project_key=%s, exit_code=%s): %s", project_key, completed.returncode, error)
         raise SonarScannerError(error)
 
@@ -369,11 +369,30 @@ class SonarQubeService:
         return repository
 
     def _classify_scanner_failure(self, output: str) -> str:
-        if "not authorized" in output or "authentication" in output or "unauthorized" in output:
+        lowered = output.lower()
+        if "not authorized" in lowered or "authentication" in lowered or "unauthorized" in lowered:
             return "SonarQube authentication failed"
-        if "connection refused" in output or "fail to get bootstrap index" in output:
+        if "connection refused" in lowered or "fail to get bootstrap index" in lowered:
             return "SonarQube became unavailable during analysis"
-        return "SonarScanner analysis failed"
+        if "outofmemoryerror" in lowered or "java heap space" in lowered:
+            return "SonarScanner ran out of memory while analyzing the repository"
+        if "unsupportedclassversionerror" in lowered:
+            return "SonarScanner requires a newer Java runtime"
+        if "no files nor directories matching" in lowered or "no files to be analyzed" in lowered:
+            return "SonarScanner did not find supported source files to analyze"
+        if "project not found" in lowered or "could not find a default branch" in lowered:
+            return "SonarQube could not prepare the analysis project"
+
+        safe_output = self._safe_error(output)
+        informative_lines = []
+        for raw_line in safe_output.splitlines():
+            line = raw_line.strip()
+            lowered = line.lower()
+            if line and ("error" in lowered or "failed" in lowered or "exception" in lowered):
+                informative_lines.append(line[:300])
+        if informative_lines:
+            return "SonarScanner analysis failed: " + " | ".join(informative_lines[-3:])
+        return "SonarScanner analysis failed without a specific reason"
 
     def _safe_error(self, error: object) -> str:
         message = str(error)

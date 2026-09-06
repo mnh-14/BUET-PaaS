@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Any, Literal
 
 from auth import (
     clear_session_cookie,
@@ -133,6 +133,208 @@ def find_dockerfile(work_dir: str) -> str | None:
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 GIT_CLONE_TIMEOUT_SECONDS = int(os.getenv("GIT_CLONE_TIMEOUT_SECONDS", "300"))
 GIT_CHECKOUT_TIMEOUT_SECONDS = int(os.getenv("GIT_CHECKOUT_TIMEOUT_SECONDS", "300"))
+
+
+def deployment_failure(
+    *,
+    source: str,
+    stage: str,
+    title: str,
+    summary: str,
+    reason: str,
+    suggestion: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a bounded, user-displayable failure without credentials or tracebacks."""
+    failure: dict[str, Any] = {
+        "source": source,
+        "stage": stage,
+        "title": title[:200],
+        "summary": summary[:1000],
+        "reason": reason[:1500],
+        "suggestion": suggestion[:1000],
+    }
+    if details:
+        failure["details"] = details
+    return failure
+
+
+def sonarqube_error_failure(error: SonarQubeError) -> dict[str, Any]:
+    message = str(error)
+    lowered = message.lower()
+    if "invalid sonarqube configuration" in lowered:
+        return deployment_failure(
+            source="sonarqube",
+            stage="security_scan",
+            title="SonarQube configuration is invalid",
+            summary=message,
+            reason="A required SonarQube backend setting has an invalid value.",
+            suggestion="Ask the backend administrator to correct the named SONAR_* setting and restart the backend.",
+        )
+    if "authentication" in lowered or "sonar_token" in lowered:
+        return deployment_failure(
+            source="sonarqube",
+            stage="security_scan",
+            title="SonarQube authentication failed",
+            summary=message,
+            reason="The backend could not authenticate to SonarQube with its configured token.",
+            suggestion="Ask the platform administrator to verify SONAR_TOKEN and its project permissions.",
+        )
+    if "unavailable" in lowered or "status=down" in lowered:
+        return deployment_failure(
+            source="sonarqube",
+            stage="security_scan",
+            title="SonarQube is unavailable",
+            summary=message,
+            reason="The SonarQube server was not reachable or was not ready during this scan.",
+            suggestion="Retry later. If it repeats, ask the SonarQube administrator to check service health and network access.",
+        )
+    if "executable was not found" in lowered:
+        return deployment_failure(
+            source="sonarqube",
+            stage="security_scan",
+            title="SonarScanner is not installed",
+            summary=message,
+            reason="The backend could not find the configured sonar-scanner executable.",
+            suggestion="Ask the backend administrator to install SonarScanner or correct SONAR_SCANNER_BIN.",
+        )
+    if "timed out" in lowered:
+        return deployment_failure(
+            source="sonarqube",
+            stage="security_scan",
+            title="SonarQube scan timed out",
+            summary=message,
+            reason="The repository analysis did not finish within the configured scan timeout.",
+            suggestion="Retry once; for a large repository, ask the backend administrator to increase SONAR_SCAN_TIMEOUT.",
+        )
+    if "out of memory" in lowered:
+        return deployment_failure(
+            source="sonarqube",
+            stage="security_scan",
+            title="SonarScanner ran out of memory",
+            summary=message,
+            reason="The scanner did not have enough memory to analyze this repository.",
+            suggestion="Ask the backend administrator to increase the scanner's Java heap or available memory, then retry.",
+        )
+    if "newer java runtime" in lowered:
+        return deployment_failure(
+            source="sonarqube",
+            stage="security_scan",
+            title="SonarScanner Java version is incompatible",
+            summary=message,
+            reason="The installed Java runtime is older than the version required by SonarScanner.",
+            suggestion="Ask the backend administrator to upgrade Java or use a compatible SonarScanner version.",
+        )
+    if "supported source files" in lowered:
+        return deployment_failure(
+            source="sonarqube",
+            stage="security_scan",
+            title="No supported source files were found",
+            summary=message,
+            reason="SonarScanner could not find files eligible for analysis in the checked-out repository.",
+            suggestion="Verify the repository contains source code and that SonarQube exclusions are not filtering it all out.",
+        )
+    return deployment_failure(
+        source="sonarqube",
+        stage="security_scan",
+        title="SonarQube analysis could not complete",
+        summary=message,
+        reason="SonarScanner or the SonarQube API returned an analysis error.",
+        suggestion="Review the reason above and the SonarQube analysis link when available, then retry after correcting the reported problem.",
+    )
+
+
+def sonarqube_gate_failure(scan_result: Any) -> dict[str, Any]:
+    failed_conditions = [
+        condition
+        for condition in scan_result.conditions
+        if condition.get("status") != "OK"
+    ]
+    if failed_conditions:
+        condition = failed_conditions[0]
+        metric = str(condition.get("metric", "quality metric")).replace("_", " ")
+        actual = condition.get("actual_value")
+        threshold = condition.get("error_threshold")
+        reason = f"The failing metric was {metric}"
+        if actual is not None:
+            reason += f" with an actual value of {actual}"
+        if threshold is not None:
+            reason += f" against the required threshold {threshold}"
+        reason += "."
+    else:
+        reason = "SonarQube returned a failing Quality Gate result without condition details."
+    return deployment_failure(
+        source="sonarqube",
+        stage="security_scan",
+        title="SonarQube Quality Gate failed",
+        summary=str(scan_result.error or "The code did not satisfy the configured Quality Gate."),
+        reason=reason,
+        suggestion="Fix the failed conditions or listed issues, push a new commit, and redeploy.",
+        details={
+            "quality_gate": scan_result.quality_gate,
+            "failed_condition_count": len(failed_conditions),
+            "issue_count": len(scan_result.issues),
+        },
+    )
+
+
+def pipeline_failure(error: Exception, stage: str) -> dict[str, Any]:
+    if isinstance(error, KubernetesDeploymentError):
+        is_build = stage.startswith("build")
+        return deployment_failure(
+            source="kubernetes",
+            stage="image_build" if is_build else "application_deployment",
+            title="Kubernetes image build failed" if is_build else "Kubernetes deployment failed",
+            summary=error.summary,
+            reason=error.reason,
+            suggestion=(
+                "Check the repository Dockerfile and build configuration, then retry. "
+                "If the service or cluster is unavailable, contact the Kubernetes administrator."
+                if is_build
+                else "Check the container port, health endpoint, environment variables, and resource settings. "
+                "Contact the Kubernetes administrator if the cluster rejected the manifest."
+            ),
+            details=error.details,
+        )
+    if isinstance(error, subprocess.TimeoutExpired):
+        timeout = error.timeout
+        return deployment_failure(
+            source="git",
+            stage="source_checkout",
+            title="Repository preparation timed out",
+            summary=f"Git did not finish within {timeout} seconds.",
+            reason="The repository may be large, use Git LFS, or the GitHub connection may be slow.",
+            suggestion="Retry once. If it repeats, increase GIT_CLONE_TIMEOUT_SECONDS and GIT_CHECKOUT_TIMEOUT_SECONDS.",
+            details={"timeout_seconds": timeout},
+        )
+
+    message = str(error)
+    if "dockerfile" in message.lower():
+        return deployment_failure(
+            source="backend",
+            stage="source_inspection",
+            title="Dockerfile preparation failed",
+            summary=message,
+            reason="The backend could not locate or prepare the Dockerfile needed for the image build.",
+            suggestion="Add a valid Dockerfile to the repository, commit it, and redeploy.",
+        )
+    if stage == "cloning":
+        return deployment_failure(
+            source="git",
+            stage="source_checkout",
+            title="Repository preparation failed",
+            summary=message[:1000] or "The repository could not be prepared.",
+            reason="GitHub access, the selected commit, or local checkout failed before analysis began.",
+            suggestion="Verify repository access and the deployment branch, then retry.",
+        )
+    return deployment_failure(
+        source="backend",
+        stage=stage,
+        title="Deployment orchestration failed",
+        summary="The backend could not complete this deployment stage.",
+        reason="An unexpected backend error occurred. Internal details were withheld for safety.",
+        suggestion="Retry once. If it repeats, give the deployment ID and failed stage to the platform administrator.",
+    )
 
 
 def _run_git(
@@ -291,7 +493,12 @@ def build_and_deploy(
     work_dir  = f"/tmp/buetpaas_{deployment_id}"
     current_stage = "queued"
 
-    def set_status(status: str, error: str = None, url: str = None):
+    def set_status(
+        status: str,
+        error: str | None = None,
+        url: str | None = None,
+        failure: dict[str, Any] | None = None,
+    ):
         """Updates deployment document and parent project status."""
         nonlocal current_stage
         if status == current_stage and error is None and url is None:
@@ -312,11 +519,13 @@ def build_and_deploy(
             "security_scan_failed": "Security quality gate failed",
             "security_scan_error": "Security scan could not complete",
         }
+        error_summary = failure.get("summary") if failure else error
         fields = {
             "status": status,
             "current_stage": status,
-            "status_message": messages.get(status, status.replace("_", " ").title()),
-            "error_summary": error,
+            "status_message": failure.get("title") if failure else messages.get(status, status.replace("_", " ").title()),
+            "error_summary": error_summary,
+            "failure": failure,
             "public_url": url,
             "updated_at": datetime.now(timezone.utc),
         }
@@ -368,6 +577,7 @@ def build_and_deploy(
             sonar_settings = SonarSettings.from_env()
         except ValueError as exc:
             error = f"Invalid SonarQube configuration: {exc}"
+            failure = sonarqube_error_failure(SonarQubeError(error))
             set_security_scan(
                 commit_sha=commit_sha,
                 status="error",
@@ -376,7 +586,7 @@ def build_and_deploy(
                 completed_at=datetime.now(timezone.utc),
                 error=error,
             )
-            set_status("security_scan_error", error=error)
+            set_status("security_scan_error", error=error, failure=failure)
             return
         if sonar_settings.enabled:
             scan_started_at = datetime.now(timezone.utc)
@@ -398,12 +608,13 @@ def build_and_deploy(
                     commit_sha=commit_sha,
                 )
             except SonarQubeError as exc:
+                failure = sonarqube_error_failure(exc)
                 set_security_scan(
                     status="error",
                     completed_at=datetime.now(timezone.utc),
                     error=str(exc),
                 )
-                set_status("security_scan_error", error=str(exc))
+                set_status("security_scan_error", error=str(exc), failure=failure)
                 return
             except Exception:
                 # Fail closed without returning an internal traceback or environment data.
@@ -413,7 +624,15 @@ def build_and_deploy(
                     completed_at=datetime.now(timezone.utc),
                     error=error,
                 )
-                set_status("security_scan_error", error=error)
+                failure = deployment_failure(
+                    source="sonarqube",
+                    stage="security_scan",
+                    title="Security scan could not complete",
+                    summary=error,
+                    reason="An unexpected error occurred while coordinating the SonarQube scan.",
+                    suggestion="Retry once. If it repeats, give the deployment ID to the backend administrator.",
+                )
+                set_status("security_scan_error", error=error, failure=failure)
                 return
 
             set_security_scan(
@@ -428,7 +647,12 @@ def build_and_deploy(
                 error=scan_result.error,
             )
             if not scan_result.success:
-                set_status("security_scan_failed", error=scan_result.error)
+                failure = sonarqube_gate_failure(scan_result)
+                set_status(
+                    "security_scan_failed",
+                    error=scan_result.error,
+                    failure=failure,
+                )
                 return
             set_status("security_scan_passed")
         else:
@@ -540,8 +764,12 @@ def build_and_deploy(
         print(f"  [{deployment_id[:8]}] ✓ Running at {url}")
 
       except Exception as exc:
-        print(f"  [{deployment_id[:8]}] ✗ FAILED: {exc}")
-        set_status("failed", error=str(exc))
+        failure = pipeline_failure(exc, current_stage)
+        print(
+            f"  [{deployment_id[:8]}] ✗ FAILED at {failure['stage']}: "
+            f"{failure['summary']}"
+        )
+        set_status("failed", error=failure["summary"], failure=failure)
 
       finally:
         safe_rmtree(work_dir)
@@ -914,6 +1142,9 @@ def list_projects(user: dict = Depends(require_user)):
                 "status":         "$deployments.status",
                 "public_url":     "$deployments.public_url",
                 "error_summary":  "$deployments.error_summary",
+                "failure":        "$deployments.failure",
+                "failed_stage":   "$deployments.failed_stage",
+                "status_message": "$deployments.status_message",
                 "instance_size":  1,
                 "deployed_at":    "$deployments.deployed_at"
             }

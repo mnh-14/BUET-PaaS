@@ -7,6 +7,7 @@ import { useAuth } from "@/context/AuthContext";
 import Navbar from "@/components/Navbar";
 import StatusBadge from "@/components/StatusBadge";
 import DeploymentHistory from "@/components/DeploymentHistory";
+import DeploymentFailurePanel from "@/components/DeploymentFailurePanel";
 import SecurityScanPanel from "@/components/SecurityScanPanel";
 import {
   getProject,
@@ -59,16 +60,27 @@ const ACTIVE_STATUSES: DeploymentStatus[] = [
   "deploy_started",
 ];
 
-function Pipeline({ status }: { status: DeploymentStatus }) {
+function Pipeline({
+  status,
+  failedStage,
+}: {
+  status: DeploymentStatus;
+  failedStage?: string;
+}) {
   const normalizedStatus =
     status === "security_scan_passed" ? "build_queued" : status;
   const currentIdx = STAGES.indexOf(normalizedStatus);
   const securityFailed =
     status === "security_scan_failed" || status === "security_scan_error";
   const failed = status === "failed" || securityFailed;
+  const recordedFailedIdx = failedStage
+    ? STAGES.indexOf(failedStage as DeploymentStatus)
+    : -1;
   const failedIdx = securityFailed
     ? STAGES.indexOf("security_scan_running")
-    : Math.max(currentIdx, 0);
+    : recordedFailedIdx >= 0
+      ? recordedFailedIdx
+      : Math.max(currentIdx, 0);
 
   return (
     <div className="flex items-center gap-0 overflow-x-auto py-2">
@@ -413,9 +425,13 @@ export default function ProjectDetailPage() {
                   Deployment Status
                 </h2>
 
-                <Pipeline status={latestDeployment.status} />
+                <Pipeline
+                  status={latestDeployment.status}
+                  failedStage={latestDeployment.failed_stage}
+                />
 
                 <SecurityScanPanel deployment={latestDeployment} />
+                <DeploymentFailurePanel deployment={latestDeployment} />
 
                 {/* Running state */}
                 {latestDeployment.status === "running" &&
@@ -443,22 +459,6 @@ export default function ProjectDetailPage() {
                       </p>
                     </div>
                   )}
-
-                {/* Failed state */}
-                {latestDeployment.status === "failed" && (
-                  <div className="mt-6 p-4 bg-red-900/20 border border-red-800/40 rounded-xl">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-red-400 font-mono font-bold text-sm">
-                        Deployment Failed
-                      </span>
-                    </div>
-                    {latestDeployment.error_summary && (
-                      <pre className="text-xs text-red-300 bg-red-900/20 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-all">
-                        {latestDeployment.error_summary}
-                      </pre>
-                    )}
-                  </div>
-                )}
 
                 {/* In-progress state */}
                 {ACTIVE_STATUSES.includes(latestDeployment.status) && (

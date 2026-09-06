@@ -78,6 +78,43 @@ def test_unknown_status_fails_closed():
         service.get_status(CONFIG, "build")
 
 
+def test_http_error_preserves_deployer_message():
+    session = Mock()
+    session.request.return_value = response(
+        400, {"status": "error", "message": "Namespace does not exist"}
+    )
+    service = KubernetesService("http://vm:5000", session=session)
+
+    with pytest.raises(KubernetesDeploymentError) as error:
+        service.start_deploy(CONFIG)
+
+    assert error.value.summary == "The Kubernetes deployment service rejected the request"
+    assert error.value.reason == "Namespace does not exist"
+    assert error.value.details["http_status"] == 400
+
+
+def test_failed_status_preserves_kubernetes_reason_and_details():
+    session = Mock()
+    session.request.return_value = response(
+        200,
+        {
+            "status": "success",
+            "result": "Failed",
+            "summary": "Build job failed.",
+            "reason": "Container exited with status 1.",
+            "details": {"job_name": "my-app-build", "failed": 1},
+        },
+    )
+    service = KubernetesService("http://vm:5000", session=session, poll_interval=0)
+
+    with pytest.raises(KubernetesDeploymentError) as error:
+        service.wait_for_status(CONFIG, "build", 1, lambda _result: None)
+
+    assert error.value.summary == "Build job failed."
+    assert error.value.reason == "Container exited with status 1."
+    assert error.value.details == {"job_name": "my-app-build", "failed": 1}
+
+
 def test_deploy_request_sends_flat_resource_fields():
     session = Mock()
     session.request.return_value = response()

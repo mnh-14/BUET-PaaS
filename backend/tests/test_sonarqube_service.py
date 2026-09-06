@@ -247,3 +247,26 @@ def test_scanner_failure_when_server_drops_is_normalized(monkeypatch, tmp_path):
         service_with_up_health(tmp_path).scan_repository(
             repository, "proj-1", "Project", COMMIT
         )
+
+
+@pytest.mark.parametrize(
+    ("scanner_output", "expected"),
+    [
+        ("java.lang.OutOfMemoryError: Java heap space", "ran out of memory"),
+        ("UnsupportedClassVersionError", "newer java runtime"),
+        ("ERROR No files to be analyzed", "did not find supported source files"),
+        ("ERROR Invalid project configuration", "invalid project configuration"),
+    ],
+)
+def test_scanner_failure_reports_informative_reason(scanner_output, expected):
+    service = SonarQubeService(settings())
+    assert expected in service._classify_scanner_failure(scanner_output).lower()
+
+
+def test_informative_scanner_failure_redacts_token():
+    service = SonarQubeService(settings())
+    result = service._classify_scanner_failure(
+        f"ERROR Plugin failed while processing value {TOKEN}"
+    )
+    assert "Plugin failed" in result
+    assert TOKEN not in result
