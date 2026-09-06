@@ -131,9 +131,15 @@ def find_dockerfile(work_dir: str) -> str | None:
 
 
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
+GIT_CLONE_TIMEOUT_SECONDS = int(os.getenv("GIT_CLONE_TIMEOUT_SECONDS", "300"))
+GIT_CHECKOUT_TIMEOUT_SECONDS = int(os.getenv("GIT_CHECKOUT_TIMEOUT_SECONDS", "300"))
 
 
-def _run_git(work_dir: str, *arguments: str, timeout: int = 60) -> str:
+def _run_git(
+    work_dir: str,
+    *arguments: str,
+    timeout: int = GIT_CHECKOUT_TIMEOUT_SECONDS,
+) -> str:
     result = subprocess.run(
         ["git", "-C", work_dir, *arguments],
         capture_output=True,
@@ -219,7 +225,7 @@ def clone_repository(
             ["git", "clone", "--no-checkout", "--filter=blob:none", repo_url, work_dir],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=GIT_CLONE_TIMEOUT_SECONDS,
             shell=False,
             env=environment,
         )
@@ -235,18 +241,21 @@ def clone_repository(
         target = expected_commit_sha.lower()
         checkout = subprocess.run(
             ["git", "-C", work_dir, "checkout", "--detach", target],
-            capture_output=True, text=True, timeout=60, shell=False, env=environment,
+            capture_output=True, text=True, timeout=GIT_CHECKOUT_TIMEOUT_SECONDS,
+            shell=False, env=environment,
         )
         if checkout.returncode != 0:
             fetch = subprocess.run(
                 ["git", "-C", work_dir, "fetch", "--depth", "1", "origin", target],
-                capture_output=True, text=True, timeout=60, shell=False, env=environment,
+                capture_output=True, text=True, timeout=GIT_CLONE_TIMEOUT_SECONDS,
+                shell=False, env=environment,
             )
             if fetch.returncode != 0:
                 raise RuntimeError("Requested commit is no longer fetchable from GitHub")
             checkout = subprocess.run(
                 ["git", "-C", work_dir, "checkout", "--detach", target],
-                capture_output=True, text=True, timeout=60, shell=False, env=environment,
+                capture_output=True, text=True, timeout=GIT_CHECKOUT_TIMEOUT_SECONDS,
+                shell=False, env=environment,
             )
             if checkout.returncode != 0:
                 raise RuntimeError("Requested commit could not be checked out")

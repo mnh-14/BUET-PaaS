@@ -56,6 +56,8 @@ Namespace is derived from the authenticated user ID. Dockerfile path and contain
 
 Copy `.env.example` to `.env`. Required integrations include MongoDB, SonarQube, GitHub App credentials, a session secret, and the private Kubernetes VM service URL/token. The backend needs no kubeconfig or Kubernetes RBAC access. GitHub App tokens are never stored in MongoDB or sent to the frontend.
 
+`GIT_CLONE_TIMEOUT_SECONDS` and `GIT_CHECKOUT_TIMEOUT_SECONDS` control local source preparation. Both default to 300 seconds and can be increased for large repositories or Git LFS downloads without changing the Kubernetes service.
+
 ## Run and test
 
 ```bash

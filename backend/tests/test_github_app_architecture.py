@@ -77,6 +77,24 @@ def test_private_clone_uses_environment_and_cleans_askpass(monkeypatch, tmp_path
     assert not __import__("pathlib").Path(captured["askpass"]).exists()
 
 
+def test_clone_uses_configured_timeout(monkeypatch, tmp_path):
+    captured = {}
+
+    def run(command, **kwargs):
+        captured["timeout"] = kwargs["timeout"]
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(main, "GIT_CLONE_TIMEOUT_SECONDS", 420)
+    monkeypatch.setattr(main.subprocess, "run", run)
+
+    main.clone_repository(
+        "https://github.com/student/public.git", str(tmp_path / "repo"),
+        installation_id=None, repository_id=None,
+    )
+
+    assert captured["timeout"] == 420
+
+
 def test_clone_error_does_not_expose_installation_token(monkeypatch, tmp_path):
     class Service:
         def __init__(self, _settings): pass
