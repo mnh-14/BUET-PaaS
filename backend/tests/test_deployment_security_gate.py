@@ -138,13 +138,19 @@ def test_successful_pipeline_scans_before_kubernetes_build_and_deploy(monkeypatc
 
 def test_scanner_error_stops_before_kubernetes(monkeypatch):
     events, deployments = install_pipeline_fakes(
-        monkeypatch, SonarScannerError("scanner failed")
+        monkeypatch,
+        SonarScannerError("scanner failed", diagnostics=["ERROR safe scanner detail"]),
     )
     run_deployment()
     assert events == ["clone", "checkout", "scan"]
     assert statuses(deployments)[-1] == "security_scan_error"
     assert failures(deployments)[-1]["source"] == "sonarqube"
     assert failures(deployments)[-1]["reason"]
+    assert any(
+        update.get("$set", {}).get("security_scan.diagnostics")
+        == ["ERROR safe scanner detail"]
+        for _, update in deployments.updates
+    )
 
 
 def test_quality_gate_failure_stops_before_kubernetes(monkeypatch):

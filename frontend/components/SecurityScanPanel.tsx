@@ -34,6 +34,7 @@ export default function SecurityScanPanel({ deployment }: { deployment: Deployme
 
   const failedConditions = scan?.conditions?.filter((condition) => condition.status !== "OK") ?? [];
   const issues = scan?.issues ?? [];
+  const diagnostics = scan?.diagnostics ?? [];
 
   if (scan?.status === "running") {
     return (
@@ -107,6 +108,22 @@ export default function SecurityScanPanel({ deployment }: { deployment: Deployme
             ))}
           </div>
         </div>
+      )}
+
+      {diagnostics.length > 0 && (
+        <details className="bg-black/25 border border-red-900/30 rounded-lg overflow-hidden">
+          <summary className="cursor-pointer px-3 py-2.5 text-xs font-mono font-bold text-gray-300 hover:text-white">
+            Scanner diagnostics ({diagnostics.length} lines)
+          </summary>
+          <div className="border-t border-red-900/30">
+            <p className="px-3 pt-2.5 text-[10px] text-gray-500">
+              Output is bounded and credentials are redacted by the backend.
+            </p>
+            <pre className="p-3 pt-2 text-[11px] leading-relaxed text-gray-300 overflow-x-auto whitespace-pre-wrap break-words max-h-80 overflow-y-auto">
+              {diagnostics.join("\n")}
+            </pre>
+          </div>
+        </details>
       )}
 
       <div className="text-xs text-gray-400 border-t border-red-900/30 pt-3">

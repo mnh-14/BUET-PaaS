@@ -67,6 +67,7 @@ export interface SecurityScan {
   error?: string | null;
   conditions?: SecurityScanCondition[];
   issues?: SecurityIssue[];
+  diagnostics?: string[];
 }
 
 export type DeploymentStatus =

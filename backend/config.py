@@ -24,6 +24,7 @@ class SonarSettings:
     token: str
     scanner_bin: str
     scan_timeout: int
+    verbose: bool = True
 
     @classmethod
     def from_env(cls) -> "SonarSettings":
@@ -42,6 +43,7 @@ class SonarSettings:
             token=os.getenv("SONAR_TOKEN", ""),
             scanner_bin=os.getenv("SONAR_SCANNER_BIN", "sonar-scanner"),
             scan_timeout=timeout,
+            verbose=_env_bool("SONAR_VERBOSE", True),
         )
 
 

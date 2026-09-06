@@ -1,10 +1,56 @@
 """HTTP client for the teammate-owned deployment service on the Kubernetes VM."""
 
+import logging
 import os
+import re
 import time
 from typing import Any, Callable
 
 import requests
+
+
+logger = logging.getLogger(__name__)
+SENSITIVE_LOG_KEY = re.compile(
+    r"(?i)(token|secret|password|authorization|api[_-]?key|credential|env_vars|github_auth)"
+)
+
+
+def _safe_log_value(value: Any, *, depth: int = 0) -> Any:
+    """Return bounded request/response data with credential-bearing fields removed."""
+    if depth > 5:
+        return "[MAX DEPTH]"
+    if isinstance(value, dict):
+        safe: dict[str, Any] = {}
+        for key, item in list(value.items())[:100]:
+            key_text = str(key)
+            safe[key_text] = (
+                "[REDACTED]"
+                if SENSITIVE_LOG_KEY.search(key_text)
+                else _safe_log_value(item, depth=depth + 1)
+            )
+        if len(value) > 100:
+            safe["[TRUNCATED]"] = f"{len(value) - 100} fields omitted"
+        return safe
+    if isinstance(value, (list, tuple)):
+        result = [_safe_log_value(item, depth=depth + 1) for item in value[:100]]
+        if len(value) > 100:
+            result.append(f"[TRUNCATED: {len(value) - 100} items omitted]")
+        return result
+    if isinstance(value, str):
+        safe_text = re.sub(r"(https?://)[^/@\s]+@", r"\1[REDACTED]@", value)
+        safe_text = re.sub(
+            r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", safe_text
+        )
+        safe_text = re.sub(
+            r"(?i)(\b(?:token|secret|password|authorization|api[_-]?key)\b"
+            r"\s*[:=]\s*[\"']?)[^\"'\s,;&}]+",
+            r"\1[REDACTED]",
+            safe_text,
+        )
+        return safe_text[:2000] + ("...[TRUNCATED]" if len(safe_text) > 2000 else "")
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value)[:500]
 
 
 class KubernetesDeploymentError(RuntimeError):
@@ -69,15 +115,28 @@ class KubernetesService:
         return headers
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        url = f"{self.base_url}{path}"
+        request_started = time.monotonic()
+        logger.warning(
+            "Kubernetes API request starting (method=%s, url=%s, timeout=%ss, payload=%s)",
+            method,
+            _safe_log_value(url),
+            self.request_timeout,
+            _safe_log_value(kwargs.get("json")),
+        )
         try:
             response = self.session.request(
                 method,
-                f"{self.base_url}{path}",
+                url,
                 headers=self._headers(),
                 timeout=self.request_timeout,
                 **kwargs,
             )
         except requests.Timeout as exc:
+            logger.error(
+                "Kubernetes API request timed out (method=%s, path=%s, elapsed=%.3fs, error=%s)",
+                method, path, time.monotonic() - request_started, _safe_log_value(str(exc)),
+            )
             raise KubernetesDeploymentError(
                 "The Kubernetes deployment service timed out",
                 reason=(
@@ -87,12 +146,20 @@ class KubernetesService:
                 details={"endpoint": path, "timeout_seconds": self.request_timeout},
             ) from exc
         except requests.ConnectionError as exc:
+            logger.error(
+                "Kubernetes API connection failed (method=%s, path=%s, elapsed=%.3fs, error=%s)",
+                method, path, time.monotonic() - request_started, _safe_log_value(str(exc)),
+            )
             raise KubernetesDeploymentError(
                 "The Kubernetes deployment service is unreachable",
                 reason="The backend could not establish a connection to the deployment service.",
                 details={"endpoint": path},
             ) from exc
         except requests.RequestException as exc:
+            logger.error(
+                "Kubernetes API request failed (method=%s, path=%s, elapsed=%.3fs, error=%s)",
+                method, path, time.monotonic() - request_started, _safe_log_value(str(exc)),
+            )
             raise KubernetesDeploymentError(
                 "The Kubernetes deployment service request failed",
                 reason="The HTTP request ended before a valid response was received.",
@@ -102,6 +169,12 @@ class KubernetesService:
         try:
             body = response.json()
         except ValueError as exc:
+            logger.error(
+                "Kubernetes API returned invalid JSON (method=%s, path=%s, status=%s, "
+                "elapsed=%.3fs, body=%s)",
+                method, path, response.status_code, time.monotonic() - request_started,
+                _safe_log_value(getattr(response, "text", "")),
+            )
             if not 200 <= response.status_code < 300:
                 raise KubernetesDeploymentError(
                     "The Kubernetes deployment service rejected the request",
@@ -113,6 +186,13 @@ class KubernetesService:
                 reason="The service responded successfully, but its response was not valid JSON.",
                 details={"endpoint": path, "http_status": response.status_code},
             ) from exc
+
+        logger.warning(
+            "Kubernetes API response received (method=%s, path=%s, status=%s, "
+            "elapsed=%.3fs, body=%s)",
+            method, path, response.status_code, time.monotonic() - request_started,
+            _safe_log_value(body),
+        )
 
         if not 200 <= response.status_code < 300:
             api_message = body.get("message") if isinstance(body, dict) else None
@@ -214,18 +294,38 @@ class KubernetesService:
         previous_status = None
         consecutive_errors = 0
         last_result: dict[str, Any] | None = None
+        poll_number = 0
+        logger.warning(
+            "Kubernetes %s polling started (app=%s, namespace=%s, timeout=%ss, interval=%ss)",
+            operation,
+            config.get("app_name"),
+            config.get("namespace"),
+            timeout,
+            self.poll_interval,
+        )
         while time.monotonic() < deadline:
+            poll_number += 1
             try:
                 result = self.get_status(config, operation)
                 consecutive_errors = 0
                 last_result = result
-            except KubernetesDeploymentError:
+            except KubernetesDeploymentError as exc:
                 consecutive_errors += 1
+                logger.error(
+                    "Kubernetes %s poll failed (poll=%s, consecutive_errors=%s, "
+                    "summary=%s, reason=%s, details=%s)",
+                    operation, poll_number, consecutive_errors, exc.summary,
+                    _safe_log_value(exc.reason), _safe_log_value(exc.details),
+                )
                 if consecutive_errors >= 3:
                     raise
                 time.sleep(self.poll_interval)
                 continue
             status = result["status"]
+            logger.warning(
+                "Kubernetes %s poll result (poll=%s, raw_status=%s, mapped_status=%s)",
+                operation, poll_number, result.get("raw_status"), status,
+            )
             if status == "unknown":
                 time.sleep(self.poll_interval)
                 continue
@@ -250,6 +350,10 @@ class KubernetesService:
             if (operation == "build" and status == "completed") or (
                 operation == "deploy" and status == "running"
             ):
+                logger.warning(
+                    "Kubernetes %s polling completed successfully (polls=%s, status=%s)",
+                    operation, poll_number, status,
+                )
                 return result
             time.sleep(self.poll_interval)
         reason = f"The {operation} did not reach a successful state within {timeout:g} seconds."
@@ -262,6 +366,10 @@ class KubernetesService:
             if isinstance(last_result.get("details"), dict):
                 details["last_details"] = last_result["details"]
             details["last_status"] = last_result.get("raw_status")
+        logger.error(
+            "Kubernetes %s polling timed out (polls=%s, timeout=%ss, last_result=%s)",
+            operation, poll_number, timeout, _safe_log_value(last_result),
+        )
         raise KubernetesDeploymentError(
             f"Kubernetes {operation} status timed out",
             reason=reason,

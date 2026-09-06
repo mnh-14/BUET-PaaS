@@ -142,6 +142,7 @@ def test_scanner_uses_safe_arguments_environment_and_repository(monkeypatch, tmp
     assert kwargs["shell"] is False
     assert f"-Dsonar.projectKey={result.project_key}" in command
     assert f"-Dsonar.scm.revision={COMMIT}" in command
+    assert "-Dsonar.verbose=true" in command
     assert TOKEN not in " ".join(command)
     assert kwargs["env"]["SONAR_HOST_URL"] == "http://sonarqube:9000"
     assert kwargs["env"]["SONAR_TOKEN"] == TOKEN
@@ -162,6 +163,7 @@ def test_quality_gate_failure_returns_failed_result(monkeypatch, tmp_path):
     assert result.conditions[0]["metric"] == "new_security_rating"
     assert result.issues[0]["file"] == "app.py"
     assert result.issues[0]["line"] == 42
+    assert result.diagnostics == ["QUALITY GATE STATUS: FAILED"]
 
 
 def test_successful_scanner_still_stops_when_api_quality_gate_failed(
@@ -217,6 +219,32 @@ def test_authentication_failure_is_normalized_and_token_not_logged(
         )
     assert TOKEN not in str(raised.value)
     assert TOKEN not in caplog.text
+    assert raised.value.diagnostics == [
+        "Authentication failed for token [REDACTED]"
+    ]
+
+
+def test_diagnostics_are_redacted_and_bounded():
+    service = SonarQubeService(settings())
+    output = "\n".join(
+        [
+            f"sonar.token={TOKEN}",
+            "Server https://build-user:build-password@sonarqube.example/api",
+            "Authorization: Bearer abc.def.ghi",
+            'Config {"client_secret":"another-secret"}',
+            *[f"DEBUG source file {index}" for index in range(250)],
+        ]
+    )
+
+    diagnostics = service._sanitize_diagnostics(output)
+
+    assert len(diagnostics) == 200
+    assert any("diagnostic lines omitted" in line for line in diagnostics)
+    assert TOKEN not in "\n".join(diagnostics)
+    assert "build-password" not in "\n".join(diagnostics)
+    assert "abc.def.ghi" not in "\n".join(diagnostics)
+    assert "another-secret" not in "\n".join(diagnostics)
+    assert diagnostics[0] == "sonar.token=[REDACTED]"
 
 
 def test_unavailable_sonarqube_does_not_start_scanner(monkeypatch, tmp_path):

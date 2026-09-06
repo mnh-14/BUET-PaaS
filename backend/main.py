@@ -388,6 +388,41 @@ def resolve_public_branch(repo_url: str, branch: str) -> str:
     return commit_sha
 
 
+def _safe_git_log_text(value: str | None, *secrets: str | None) -> str:
+    """Bound and redact Git output before writing it to VM logs."""
+    text = (value or "").strip()
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    text = re.sub(r"(https?://)[^/@\s]+@", r"\1[REDACTED]@", text)
+    lines = [line[:500] for line in text.splitlines() if line.strip()]
+    if len(lines) > 100:
+        omitted = len(lines) - 100
+        lines = [*lines[:50], f"... {omitted} Git output lines omitted ...", *lines[-50:]]
+    return " | ".join(lines) or "[no output]"
+
+
+def _safe_repository_label(repo_url: str) -> str:
+    """Return a useful repository URL for logs without embedded credentials."""
+    return re.sub(r"(https?://)[^/@\s]+@", r"\1[REDACTED]@", repo_url)[:500]
+
+
+def _log_checkout_summary(work_dir: str) -> None:
+    file_count = 0
+    extension_counts: dict[str, int] = {}
+    for root, directory_names, file_names in os.walk(work_dir):
+        directory_names[:] = [name for name in directory_names if name != ".git"]
+        for file_name in file_names:
+            file_count += 1
+            extension = os.path.splitext(file_name)[1].lower() or "[no extension]"
+            extension_counts[extension] = extension_counts.get(extension, 0) + 1
+    print(
+        f"  [git] checkout summary path={work_dir} files={file_count} "
+        f"extensions={dict(sorted(extension_counts.items()))}",
+        flush=True,
+    )
+
+
 def clone_repository(
     repo_url: str,
     work_dir: str,
@@ -399,7 +434,14 @@ def clone_repository(
     """Clone public or GitHub App repository without putting credentials in argv."""
     environment = os.environ.copy()
     askpass_path: str | None = None
+    token: str | None = None
     try:
+        print(
+            f"  [git] clone starting repository={_safe_repository_label(repo_url)} "
+            f"destination={work_dir} private={installation_id is not None} "
+            f"expected_commit={expected_commit_sha or '[not supplied]'}",
+            flush=True,
+        )
         if installation_id is not None:
             if repository_id is None:
                 raise RuntimeError("GitHub repository identity is incomplete")
@@ -431,6 +473,12 @@ def clone_repository(
             shell=False,
             env=environment,
         )
+        print(
+            f"  [git] clone finished exit_code={result.returncode} "
+            f"stdout={_safe_git_log_text(result.stdout, token)} "
+            f"stderr={_safe_git_log_text(result.stderr, token)}",
+            flush=True,
+        )
         if result.returncode != 0:
             message = result.stderr.lower()
             if "authentication" in message or "not found" in message:
@@ -441,16 +489,30 @@ def clone_repository(
         if not COMMIT_SHA_PATTERN.fullmatch(expected_commit_sha):
             raise RuntimeError("Invalid expected commit SHA")
         target = expected_commit_sha.lower()
+        print(f"  [git] checkout starting target={target}", flush=True)
         checkout = subprocess.run(
             ["git", "-C", work_dir, "checkout", "--detach", target],
             capture_output=True, text=True, timeout=GIT_CHECKOUT_TIMEOUT_SECONDS,
             shell=False, env=environment,
         )
+        print(
+            f"  [git] checkout finished exit_code={checkout.returncode} "
+            f"stdout={_safe_git_log_text(checkout.stdout, token)} "
+            f"stderr={_safe_git_log_text(checkout.stderr, token)}",
+            flush=True,
+        )
         if checkout.returncode != 0:
+            print(f"  [git] target missing locally; fetching target={target}", flush=True)
             fetch = subprocess.run(
                 ["git", "-C", work_dir, "fetch", "--depth", "1", "origin", target],
                 capture_output=True, text=True, timeout=GIT_CLONE_TIMEOUT_SECONDS,
                 shell=False, env=environment,
+            )
+            print(
+                f"  [git] fetch finished exit_code={fetch.returncode} "
+                f"stdout={_safe_git_log_text(fetch.stdout, token)} "
+                f"stderr={_safe_git_log_text(fetch.stderr, token)}",
+                flush=True,
             )
             if fetch.returncode != 0:
                 raise RuntimeError("Requested commit is no longer fetchable from GitHub")
@@ -459,15 +521,43 @@ def clone_repository(
                 capture_output=True, text=True, timeout=GIT_CHECKOUT_TIMEOUT_SECONDS,
                 shell=False, env=environment,
             )
+            print(
+                f"  [git] checkout retry finished exit_code={checkout.returncode} "
+                f"stdout={_safe_git_log_text(checkout.stdout, token)} "
+                f"stderr={_safe_git_log_text(checkout.stderr, token)}",
+                flush=True,
+            )
             if checkout.returncode != 0:
                 raise RuntimeError("Requested commit could not be checked out")
         verified = subprocess.run(
             ["git", "-C", work_dir, "rev-parse", "HEAD"],
             capture_output=True, text=True, timeout=30, shell=False, env=environment,
         )
+        print(
+            f"  [git] HEAD verification exit_code={verified.returncode} "
+            f"resolved_head={_safe_git_log_text(verified.stdout, token)} "
+            f"stderr={_safe_git_log_text(verified.stderr, token)}",
+            flush=True,
+        )
         if verified.returncode != 0 or verified.stdout.strip().lower() != target:
             raise RuntimeError("Checked-out commit does not match the requested SHA")
+        _log_checkout_summary(work_dir)
         return target
+    except subprocess.TimeoutExpired as exc:
+        print(
+            f"  [git] operation timed out timeout={exc.timeout} "
+            f"command={_safe_git_log_text(str(exc.cmd), token)} "
+            f"stdout={_safe_git_log_text(exc.stdout.decode(errors='replace') if isinstance(exc.stdout, bytes) else exc.stdout, token)} "
+            f"stderr={_safe_git_log_text(exc.stderr.decode(errors='replace') if isinstance(exc.stderr, bytes) else exc.stderr, token)}",
+            flush=True,
+        )
+        raise RuntimeError("Git operation timed out") from exc
+    except OSError as exc:
+        print(
+            f"  [git] operation could not start error={_safe_git_log_text(str(exc), token)}",
+            flush=True,
+        )
+        raise RuntimeError("Git operation could not start") from exc
     finally:
         environment.pop("BUETPAAS_GIT_TOKEN", None)
         if askpass_path:
@@ -613,6 +703,7 @@ def build_and_deploy(
                     status="error",
                     completed_at=datetime.now(timezone.utc),
                     error=str(exc),
+                    diagnostics=exc.diagnostics,
                 )
                 set_status("security_scan_error", error=str(exc), failure=failure)
                 return
@@ -643,6 +734,7 @@ def build_and_deploy(
                 scanner_exit_code=scan_result.scanner_exit_code,
                 conditions=scan_result.conditions,
                 issues=scan_result.issues,
+                diagnostics=scan_result.diagnostics,
                 completed_at=datetime.now(timezone.utc),
                 error=scan_result.error,
             )
