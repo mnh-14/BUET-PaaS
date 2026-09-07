@@ -472,6 +472,10 @@ class JobPipelineBuilder:
                             "args": [multiline_script_block],
                             "envFrom": [{"secretRef": {"name": "paas-deployer-env"}}],
                             "env": [{"name": k, "value": str(v)} for k, v in self._env_vars.items()],
+                            "volumeMounts": [{
+                                "name": "workspace-vol",
+                                "mountPath": "/workspace"
+                            }],
                             "resources": {
                                 "requests": {
                                     "cpu": "500m",
@@ -482,6 +486,10 @@ class JobPipelineBuilder:
                                     "memory": "3Gi"
                                 }
                             }
+                        }],
+                        "volumes": [{
+                            "name": "workspace-vol",
+                            "emptyDir": {}
                         }]
                     }
                 }
