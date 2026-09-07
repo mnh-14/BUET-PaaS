@@ -24,6 +24,9 @@ rules:
   - apiGroups: ["autoscaling"]
     resources: ["horizontalpodautoscalers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pod/logs"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -58,7 +61,7 @@ spec:
       serviceAccountName: paas-deployer
       containers:
         - name: paas-deployer
-          image: 192.168.128.152/paas-builders/deploy-service-image:v1.6
+          image: 192.168.128.152/paas-builders/deploy-service-image:v1.8
           imagePullPolicy: Always
           ports:
             - containerPort: 5000
