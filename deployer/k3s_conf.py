@@ -431,7 +431,12 @@ class JobPipelineBuilder:
 
         # if insecure:
         #     self._env_vars["EXTRA_FLAGS"] = "--insecure"
-        self._env_vars["EXTRA_FLAGS"] = "--skip-tls-verify"
+        # self._env_vars["EXTRA_FLAGS"] = "--skip-tls-verify" \
+        #                                 "--compressed-caching=false" \
+        #                                 "--cache=true" \
+        #                                 "--cache-copy-layers=true" \
+        #                                 "--cache-ttl=24h"
+        self._env_vars["EXTRA_FLAGS"] = "--skip-tls-verify "
 
         return self
 
@@ -469,12 +474,12 @@ class JobPipelineBuilder:
                             "env": [{"name": k, "value": str(v)} for k, v in self._env_vars.items()],
                             "resources": {
                                 "requests": {
-                                    "cpu": "250m",
-                                    "memory": "512Mi"
+                                    "cpu": "500m",
+                                    "memory": "1Gi"
                                 },
                                 "limits": {
-                                    "cpu": "1000m",
-                                    "memory": "1.5Gi"
+                                    "cpu": "2000m",
+                                    "memory": "3Gi"
                                 }
                             }
                         }]
