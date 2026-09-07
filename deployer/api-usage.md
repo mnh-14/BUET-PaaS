@@ -45,6 +45,10 @@ Example payload with user_config:
     "git_url": "https://github.com/mnh-14/calculator-tester.git",
     "git_branch": "main",
     "dockerfile_path": "Dockerfile",
+    "build_args": {
+      "APP_ENV": "production",
+      "VERSION": "1.0.0"
+    },
     "container_port": 8080,
     "replicas": 2,
     "cpu_request": "100m",
@@ -54,6 +58,12 @@ Example payload with user_config:
   }
 }
 ```
+
+`build_args` is optional and is passed to Kaniko as Docker build arguments. Its
+value must be an object whose keys are argument names and whose values are
+token-safe strings, for example `{"APP_ENV": "production"}`. Values containing
+spaces or shell-special characters are not supported by the current builder
+wrapper.
 
 Example payload without user_config wrapper:
 

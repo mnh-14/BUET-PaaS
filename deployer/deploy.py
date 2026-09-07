@@ -86,6 +86,10 @@ user_config = {
     #     "NODE_ENV": "production",
     #     "DATABASE_URL": "postgres://user:pass@db-service:5432/mydb"
     # },
+    # "build_args": {
+    #     "APP_ENV": "production",
+    #     "VERSION": "1.0.0"
+    # },
 
     # Health Checks & Lifecycle [healt_path is advanced settings, by default no health checks are configured]
     # "health_path": "/healthz",                   # HTTP GET path for Liveness/Readiness probes
@@ -150,7 +154,11 @@ def build_image(user_config: Dict[str, Any]):
     builder.apply_git_cloner(git_url=user_config["git_url"], branch=user_config.get("git_branch", "main"))
     # builder.apply_trivy_scan(severity="CRITICAL,HIGH", fail_on_cve=True)
     user_config["image"] = f"{user_config['app_name']}-{user_config['namespace']}-build:latest"
-    builder.apply_kaniko_build(image_destination=user_config["image"], dockerfile_path=user_config.get("dockerfile_path", "Dockerfile"))
+    builder.apply_kaniko_build(
+        image_destination=user_config["image"],
+        dockerfile_path=user_config.get("dockerfile_path", "Dockerfile"),
+        build_args=user_config.get("build_args", {}),
+    )
     build_conf = builder.build()
     utils.create_from_dict(k3s_client, build_conf)
     return build_conf

@@ -418,7 +418,13 @@ class JobPipelineBuilder:
         self._env_vars["EXIT_CODE"] = "1" if fail_on_cve else "0"
         return self
 
-    def apply_kaniko_build(self, image_destination: str, dockerfile_path: str = "Dockerfile", insecure: bool = False) -> "JobPipelineBuilder":
+    def apply_kaniko_build(
+        self,
+        image_destination: str,
+        dockerfile_path: str = "Dockerfile",
+        insecure: bool = False,
+        build_args: Optional[Dict[str, Any]] = None,
+    ) -> "JobPipelineBuilder":
         self._script_list.append("/usr/local/bin/run-kaniko.sh")
         self._env_vars["IMAGE_DESTINATION"] = DEFAULT_HARBOR_IP+"/buet-paas-student-apps/"+image_destination
         # self._env_vars["IMAGE_DESTINATION"] = f"{DEFAULT_PRIVATE_IP}/buet-paas-student-apps/{self.app_name}-{self.namespace}:{image_tag}"
@@ -436,7 +442,10 @@ class JobPipelineBuilder:
         #                                 "--cache=true" \
         #                                 "--cache-copy-layers=true" \
         #                                 "--cache-ttl=24h"
-        self._env_vars["EXTRA_FLAGS"] = "--skip-tls-verify "
+        extra_flags = ["--skip-tls-verify"]
+        for name, value in (build_args or {}).items():
+            extra_flags.append(f"--build-arg={name}={value}")
+        self._env_vars["EXTRA_FLAGS"] = " ".join(extra_flags)
 
         return self
 
