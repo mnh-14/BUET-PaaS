@@ -3,9 +3,11 @@ from flask import Flask, jsonify, request
 from deploy import (
     build_image,
     check_build_status,
+    get_build_logs,
     check_deploy_status,
     create_namespace_if_not_exists,
     deploy_application,
+    get_deploy_logs,
 )
 
 app = Flask(__name__)
@@ -86,6 +88,25 @@ def api_build_status():
         return jsonify({"status": "error", "message": str(exc)}), 400
 
 
+@app.route("/api/build/logs", methods=["GET"])
+def api_build_logs():
+    try:
+        name = request.args.get("name") or request.args.get("app_name")
+        namespace = request.args.get("namespace", "default")
+        if not name:
+            raise ValueError("'name' or 'app_name' query parameter is required.")
+
+        result = get_build_logs(name=name, namespace=namespace)
+        return jsonify({
+            "status": "success",
+            "name": name,
+            "namespace": namespace,
+            **result,
+        })
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
+
+
 @app.route("/api/deploy/status", methods=["POST"])
 def api_deploy_status():
     try:
@@ -112,6 +133,25 @@ def api_deploy_status():
         if result["status"] == "Running" and result.get("url"):
             response["url"] = result["url"]
         return jsonify(response)
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
+
+
+@app.route("/api/deploy/logs", methods=["GET"])
+def api_deploy_logs():
+    try:
+        name = request.args.get("name") or request.args.get("app_name")
+        namespace = request.args.get("namespace", "default")
+        if not name:
+            raise ValueError("'name' or 'app_name' query parameter is required.")
+
+        result = get_deploy_logs(name=name, namespace=namespace)
+        return jsonify({
+            "status": "success",
+            "name": name,
+            "namespace": namespace,
+            **result,
+        })
     except Exception as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
 

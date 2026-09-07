@@ -106,6 +106,23 @@ def _get(path):
 	return _request("GET", path)
 
 
+def _fetch_and_save_logs(path, filename):
+	"""Fetch logs from the deployer API, print them, and save the response."""
+	status_code, response = _get(
+		f"{path}?name={user_config['app_name']}&namespace={NAMESPACE}"
+	)
+	if status_code is None or response is None:
+		_fail(f"Unable to fetch logs from {path}")
+		return False
+
+	formatted_response = json.dumps(response, indent=2, sort_keys=True, default=str)
+	print(f"\n===== {path} =====\n{formatted_response}\n")
+	output_path = LOG_DIR / filename
+	output_path.write_text(formatted_response + "\n", encoding="utf-8")
+	_progress(f"Logs from {path} saved to {output_path}")
+	return status_code == 200 and response.get("status") == "success"
+
+
 def _poll_status(path, terminal_states, pending_states):
 	_progress(f"Starting status polling for {path}")
 	deadline = time.monotonic() + POLL_TIMEOUT_SECONDS
@@ -355,12 +372,20 @@ def test_build_pipeline():
 	status, response = _post("/api/build", {"user_config": user_config})
 	if status != 202 or not response or response.get("status") != "success":
 		_fail(f"Build request failed: HTTP {status}, response={response}")
+		_fetch_and_save_logs(
+			"/api/build/logs",
+			f"build-api-logs-{_diagnostic_timestamp()}.json",
+		)
 		return False
 
 	build_status = _poll_status(
 		"/api/build/status",
 		terminal_states={"Succeeded", "Failed", "Unknown"},
 		pending_states={"Pending", "Running"},
+	)
+	_fetch_and_save_logs(
+		"/api/build/logs",
+		f"build-api-logs-{_diagnostic_timestamp()}.json",
 	)
 	api = _load_kube_client()
 	if api is not None:
@@ -386,12 +411,20 @@ def test_deploy_pipeline():
 	status, response = _post("/api/deploy", {"user_config": user_config})
 	if status != 202 or not response or response.get("status") != "success":
 		_fail(f"Deploy request failed: HTTP {status}, response={response}")
+		_fetch_and_save_logs(
+			"/api/deploy/logs",
+			f"deploy-api-logs-{_diagnostic_timestamp()}.json",
+		)
 		return False
 
 	deployment_status = _poll_status(
 		"/api/deploy/status",
 		terminal_states={"Running", "Failed", "Unknown"},
 		pending_states={"Pending"},
+	)
+	_fetch_and_save_logs(
+		"/api/deploy/logs",
+		f"deploy-api-logs-{_diagnostic_timestamp()}.json",
 	)
 	api = _load_kube_client()
 	if api is not None:

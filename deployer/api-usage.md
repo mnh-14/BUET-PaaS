@@ -13,12 +13,14 @@ Deployment service used by the integration test:
 They are also the current deployment of deployment-service
 The integration test can override this URL with the `DEPLOYER_URL` environment variable.
 
-The deployer exposes 4 main API endpoints:
+The deployer exposes 6 main API endpoints:
 
 1. POST /api/build
 2. POST /api/deploy
 3. POST /api/build/status
 4. POST /api/deploy/status
+5. GET /api/build/logs
+6. GET /api/deploy/logs
 
 ---
 
@@ -192,7 +194,48 @@ Possible result values:
 
 ---
 
-## 4) Check deployment status
+## 4) Get build logs
+
+Endpoint:
+- GET /api/build/logs
+
+Purpose:
+- Returns logs from every Pod created for the build Job. Multiple Pods produce multiple entries in the `logs` array.
+
+Query parameters:
+- `name` or `app_name`: application name
+- `namespace`: application namespace; defaults to `default` for request compatibility. Build Pods are read from the builder namespace internally.
+
+Example:
+
+```text
+GET /api/build/logs?name=calculator&namespace=random-user-a
+```
+
+Success response:
+
+```json
+{
+  "status": "success",
+  "name": "calculator",
+  "namespace": "random-user-a",
+  "job_name": "calculator-random-user-a-build-job",
+  "logs": [
+    {
+      "pod_name": "calculator-random-user-a-build-job-abc12",
+      "container": "paas-builder",
+      "logs": "...build output..."
+    }
+  ]
+}
+```
+
+If a Pod exists but its logs cannot be read, that entry contains `logs: null`,
+`error`, and `http_status` instead of build output.
+
+---
+
+## 5) Check deployment status
 
 Endpoint:
 - POST /api/deploy/status
@@ -248,6 +291,48 @@ Possible result values:
 - Running
 - Failed
 - Unknown
+
+---
+
+## 6) Get deployment logs
+
+Endpoint:
+- GET /api/deploy/logs
+
+Purpose:
+- Returns logs from every Pod selected by the deployment's `app=<name>` label. Multiple Pods and multiple containers are represented in the response.
+
+Query parameters:
+- `name` or `app_name`: application name
+- `namespace`: Kubernetes namespace; defaults to `default`
+
+Example:
+
+```text
+GET /api/deploy/logs?name=calculator&namespace=random-user-a
+```
+
+Success response:
+
+```json
+{
+  "status": "success",
+  "name": "calculator",
+  "namespace": "random-user-a",
+  "deployment_name": "calculator-deployment",
+  "logs": [
+    {
+      "pod_name": "calculator-deployment-abc12",
+      "containers": [
+        {
+          "container": "calculator",
+          "logs": "...application output..."
+        }
+      ]
+    }
+  ]
+}
+```
 
 ---
 
@@ -343,4 +428,16 @@ curl -X POST http://localhost:5000/api/deploy/status \
     "name": "calculator",
     "namespace": "random-user-a"
   }'
+```
+
+Get build logs:
+
+```bash
+curl "http://localhost:5000/api/build/logs?name=calculator&namespace=random-user-a"
+```
+
+Get deployment logs:
+
+```bash
+curl "http://localhost:5000/api/deploy/logs?name=calculator&namespace=random-user-a"
 ```
