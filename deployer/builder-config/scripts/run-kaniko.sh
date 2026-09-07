@@ -36,18 +36,6 @@ EOF
   echo "✓ Kaniko authentication config generated at ${DOCKER_CONFIG}/config.json"
 fi
 
-INJECT_HEADER=$(cat << 'EOF'
-ARG NODE_OPTIONS="--max-old-space-size=1536 --max-semi-space-size=64"
-ARG NODE_ENV=production
-ENV NODE_OPTIONS=$NODE_OPTIONS
-ENV NODE_ENV=$NODE_ENV
-EOF
-)
-
-# Insert the entire block at the top of the Dockerfile
-sed -i "1i $INJECT_HEADER" /workspace/Dockerfile
-echo "✓ Injected NODE_OPTIONS and NODE_ENV into Dockerfile."
-
 
 /kaniko/executor \
   --context=dir:///workspace \
@@ -56,5 +44,7 @@ echo "✓ Injected NODE_OPTIONS and NODE_ENV into Dockerfile."
   --cache=true \
   --cache-copy-layers=true \
   --compressed-caching=false \
+  --snapshot-mode=redo \
+  --use-new-run \
   ${EXTRA_FLAGS}
 echo "✓ Kaniko build complete."
