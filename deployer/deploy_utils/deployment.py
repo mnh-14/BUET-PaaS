@@ -45,11 +45,15 @@ def check_deploy_status(name: str, namespace: str):
 
 		conditions = status.conditions or []
 		details["conditions"] = [condition.to_dict() if hasattr(condition, "to_dict") else str(condition) for condition in conditions]
-		for condition in conditions:
-			if condition.type == "Available" and condition.status == "True":
-				return {"status": "Running", "summary": f"Deployment '{deployment_name}' is running.", "reason": condition.reason or "Available replicas are ready.", "details": details, "url": f"http://{name}.{namespace}.{default_floating_ip}.sslip.io"}
-			if condition.type == "Progressing" and condition.reason == "ProgressDeadlineExceeded":
-				return {"status": "Failed", "summary": f"Deployment '{deployment_name}' failed to become ready.", "reason": condition.message or condition.reason, "details": details}
+		if any(condition.type == "Available" and condition.status == "True" for condition in conditions):
+			condition = next(condition for condition in conditions if condition.type == "Available" and condition.status == "True")
+			return {"status": "Running", "summary": f"Deployment '{deployment_name}' is running.", "reason": condition.reason or "Available replicas are ready.", "details": details, "url": f"http://{name}.{namespace}.{default_floating_ip}.sslip.io"}
+		if any(condition.type == "Progressing" and condition.reason == "ProgressDeadlineExceeded" for condition in conditions):
+			condition = next(condition for condition in conditions if condition.type == "Progressing" and condition.reason == "ProgressDeadlineExceeded")
+			return {"status": "Failed", "summary": f"Deployment '{deployment_name}' failed to become ready.", "reason": condition.message or condition.reason, "details": details}
+		if any(condition.type == "Progressing" and condition.status == "True" for condition in conditions):
+			condition = next(condition for condition in conditions if condition.type == "Progressing" and condition.status == "True")
+			return {"status": "Pending", "summary": f"Deployment '{deployment_name}' is progressing.", "reason": condition.message or condition.reason or "Deployment rollout is in progress.", "details": details}
 		if details["ready_replicas"] > 0:
 			return {"status": "Running", "summary": f"Deployment '{deployment_name}' has ready replicas.", "reason": "At least one replica is ready.", "details": details, "url": f"http://{name}.{namespace}.{default_floating_ip}.sslip.io"}
 		if details["replicas"] > 0:
@@ -80,6 +84,8 @@ def get_deploy_logs(name: str, namespace: str):
 				pod_logs.append({"container": container_name, "logs": container_logs})
 			except client.exceptions.ApiException as exc:
 				pod_logs.append({"container": container_name, "logs": None, "error": str(exc), "http_status": exc.status})
+			except Exception as exc:
+				pod_logs.append({"container": container_name, "logs": None, "error": str(exc), "http_status": 500})
 		logs.append({"pod_name": pod_name, "containers": pod_logs})
 	return {"deployment_name": f"{name}-deployment", "namespace": namespace, "logs": logs}
 
