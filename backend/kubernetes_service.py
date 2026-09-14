@@ -264,6 +264,20 @@ class KubernetesService:
                 reason=str(result.get("message") or "The service did not report success."),
             )
 
+    def get_build_logs(self, name: str, namespace: str) -> dict[str, Any]:
+        result = self._request(
+            "GET", "/api/build/logs", params={"name": name, "namespace": namespace}
+        )
+        self._require_success(result, "build logs")
+        return result
+
+    def get_deploy_logs(self, name: str, namespace: str) -> dict[str, Any]:
+        result = self._request(
+            "GET", "/api/deploy/logs", params={"name": name, "namespace": namespace}
+        )
+        self._require_success(result, "deploy logs")
+        return result
+
     def get_status(self, config: dict[str, Any], operation: str) -> dict[str, Any]:
         if operation not in {"build", "deploy"}:
             raise ValueError("operation must be build or deploy")

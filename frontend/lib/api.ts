@@ -299,3 +299,24 @@ export function subscribeToDeployment(
   source.onerror = () => onError?.();
   return source;
 }
+
+export interface DeploymentLogChunk {
+  source: "build" | "deploy";
+  pod: string;
+  container: string;
+  text: string;
+}
+
+export function subscribeToDeploymentLogs(
+  deploymentId: string,
+  onChunk: (chunk: DeploymentLogChunk) => void,
+  onError?: () => void,
+): EventSource {
+  const source = new EventSource(
+    `${BASE_URL}/api/v1/deployments/${deploymentId}/logs`,
+    { withCredentials: true },
+  );
+  source.onmessage = (event) => onChunk(JSON.parse(event.data) as DeploymentLogChunk);
+  source.onerror = () => onError?.();
+  return source;
+}

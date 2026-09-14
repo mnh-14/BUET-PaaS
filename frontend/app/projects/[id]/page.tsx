@@ -9,6 +9,7 @@ import StatusBadge from "@/components/StatusBadge";
 import DeploymentHistory from "@/components/DeploymentHistory";
 import DeploymentFailurePanel from "@/components/DeploymentFailurePanel";
 import SecurityScanPanel from "@/components/SecurityScanPanel";
+import DeploymentLogsPanel from "@/components/DeploymentLogsPanel";
 import {
   getProject,
   getDeployment,
@@ -47,6 +48,15 @@ const STAGE_LABELS: Record<string, string> = {
   deploy_started: "Deploy Started",
   running: "Running",
 };
+
+const NO_LOG_STATUSES: DeploymentStatus[] = [
+  "queued",
+  "cloning",
+  "security_scan_running",
+  "security_scan_passed",
+  "security_scan_failed",
+  "security_scan_error",
+];
 
 const ACTIVE_STATUSES: DeploymentStatus[] = [
   "queued",
@@ -432,6 +442,13 @@ export default function ProjectDetailPage() {
 
                 <SecurityScanPanel deployment={latestDeployment} />
                 <DeploymentFailurePanel deployment={latestDeployment} />
+
+                {!NO_LOG_STATUSES.includes(latestDeployment.status) && (
+                  <DeploymentLogsPanel
+                    key={latestDeployment.deployment_id}
+                    deploymentId={latestDeployment.deployment_id}
+                  />
+                )}
 
                 {/* Running state */}
                 {latestDeployment.status === "running" &&

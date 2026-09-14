@@ -1335,6 +1335,101 @@ async def deployment_events(deployment_id: str, user: dict = Depends(require_use
     )
 
 
+DEPLOYMENT_TERMINAL_STATUSES = {
+    "running", "failed", "security_scan_failed", "security_scan_error", "stopped",
+}
+NO_KUBERNETES_JOB_STATUSES = {
+    "queued", "cloning", "security_scan_running", "security_scan_passed",
+    "security_scan_failed", "security_scan_error",
+}
+
+
+@app.get("/api/v1/deployments/{deployment_id}/logs")
+async def deployment_logs(deployment_id: str, user: dict = Depends(require_user)):
+    project_ids = projects_col().distinct("project_id", {"user_id": user["user_id"]})
+    deployment = deployments_col().find_one(
+        {"deployment_id": deployment_id, "project_id": {"$in": project_ids}},
+        {"_id": 0},
+    )
+    if not deployment:
+        raise HTTPException(status_code=404, detail="Deployment not found.")
+    project = projects_col().find_one({"project_id": deployment["project_id"]}, {"_id": 0})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    namespace = kubernetes_name(str(project.get("namespace") or project["user_id"]))
+    app_name = kubernetes_name(project.get("app_name") or project["project_name"])
+    kube = KubernetesService()
+    sent_lengths: dict[tuple[str, str, str], int] = {}
+
+    def _new_chunks(source: str) -> list[dict[str, str]]:
+        """Fetch one log snapshot from the deployer and return only newly appended text."""
+        try:
+            if source == "build":
+                result = kube.get_build_logs(app_name, namespace)
+                entries = [
+                    (entry.get("pod_name", ""), entry.get("container", ""), entry.get("logs"))
+                    for entry in result.get("logs", [])
+                ]
+            else:
+                result = kube.get_deploy_logs(app_name, namespace)
+                entries = [
+                    (entry.get("pod_name", ""), container.get("container", ""), container.get("logs"))
+                    for entry in result.get("logs", [])
+                    for container in entry.get("containers", [])
+                ]
+        except KubernetesDeploymentError:
+            return []
+
+        chunks = []
+        for pod, container, text in entries:
+            text = text or ""
+            key = (source, pod, container)
+            previous_len = sent_lengths.get(key, 0)
+            if len(text) > previous_len:
+                chunks.append({
+                    "source": source,
+                    "pod": pod,
+                    "container": container,
+                    "text": text[previous_len:],
+                })
+            sent_lengths[key] = len(text)
+        return chunks
+
+    async def stream():
+        poll_interval = float(os.getenv("KUBERNETES_LOG_POLL_INTERVAL", "2"))
+        while True:
+            document = await asyncio.to_thread(
+                deployments_col().find_one,
+                {"deployment_id": deployment_id},
+                {"_id": 0},
+            )
+            if not document:
+                yield "event: error\ndata: {\"detail\":\"Deployment removed\"}\n\n"
+                return
+            status = document.get("status")
+
+            if status not in NO_KUBERNETES_JOB_STATUSES:
+                chunks = await asyncio.to_thread(_new_chunks, "build")
+                chunks += await asyncio.to_thread(_new_chunks, "deploy")
+                for chunk in chunks:
+                    yield f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n"
+                if not chunks:
+                    yield ": keepalive\n\n"
+            else:
+                yield ": keepalive\n\n"
+
+            if status in DEPLOYMENT_TERMINAL_STATUSES:
+                return
+            await asyncio.sleep(poll_interval)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 def resolve_project_head(project: dict) -> str:
     branch = project.get("deploy_branch", "main")
     if project.get("github_installation_id"):
