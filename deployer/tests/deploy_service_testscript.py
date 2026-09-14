@@ -180,6 +180,8 @@ def _safe_pod_log(api, namespace, pod_name, container_name, previous=False):
 		)
 	except client.exceptions.ApiException as exc:
 		return f"[Unable to read logs: {exc.reason}]"
+	except Exception as exc:
+		return f"[Unable to read logs: {type(exc).__name__}: {exc}]"
 
 
 def _safe_exec(api, namespace, pod_name, command, container_name):
@@ -198,6 +200,8 @@ def _safe_exec(api, namespace, pod_name, command, container_name):
 		return result or "[Command returned no output]"
 	except client.exceptions.ApiException as exc:
 		return f"[Unable to execute command: {exc.reason}]"
+	except Exception as exc:
+		return f"[Unable to execute command: {type(exc).__name__}: {exc}]"
 
 
 def _write_pod_diagnostics(api, namespace, label_selector, filename, parent_reader=None, parent_command=None):
