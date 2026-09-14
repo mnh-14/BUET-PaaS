@@ -1,6 +1,13 @@
 """Receives security incident notifications from the Deployer
 (deployer/falco_routes.py) and stores them for the dashboard.
 
+IMPORTANT: this is downstream, not the primary alert handler. The Deployer
+receives raw Falco/Falcosidekick alerts directly and performs mitigation
+(scaling the offending Deployment to 0) using its own k8s ClusterRole — this
+endpoint only records what already happened, for the dashboard to show.
+
+Mirrors the pattern in github_routes.py: a factory function returning an
+APIRouter, registered in main.py via app.include_router(...).
 """
 
 import os
@@ -40,7 +47,8 @@ def create_security_router() -> APIRouter:
             "output": payload.get("output"),
             "k8s_namespace": payload.get("k8s_namespace"),
             "k8s_pod_name": payload.get("k8s_pod_name"),
-            "deployment_name": payload.get("deployment_name"),
+            "target_kind": payload.get("target_kind"),
+            "target_name": payload.get("target_name"),
             "action_taken": payload.get("action_taken"),
             "hostname": payload.get("hostname"),
             "event_time": payload.get("event_time"),

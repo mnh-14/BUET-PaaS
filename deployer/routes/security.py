@@ -5,9 +5,9 @@ waiting on a dashboard.
 Flow per alert:
   1. Falcosidekick POSTs here (shared-secret header, not HMAC — Falcosidekick
      doesn't sign requests the way GitHub does).
-  2. Map the alert's priority to a tier: AUTO_ACTION tier scales the owning
-     Deployment to 0 replicas immediately; NOTIFY_ONLY tier just forwards a
-     record, no action taken.
+  2. Map the alert's priority to a tier: AUTO_ACTION tier mitigates the
+     owning resource immediately (scale a Deployment to 0, or delete a
+     build Job); NOTIFY_ONLY tier just forwards a record, no action taken.
   3. Either way, POST a notification to the Backend (FastAPI) so it lands in
      security_events_col for the dashboard. The Backend is downstream here —
      it does not decide or perform the mitigation, only records it.
@@ -15,8 +15,8 @@ Flow per alert:
 No in-process alert dedup is done here on purpose: deploy_service.py runs
 under gunicorn with multiple worker processes, which don't share memory, so
 an in-memory dedup set would be unreliable. Instead:
-  - The mitigation action (scale-to-0) is naturally idempotent — applying it
-    twice for the same duplicate-delivered alert is harmless.
+  - The mitigation actions (scale-to-0, delete Job) are naturally idempotent
+    — applying them twice for the same duplicate-delivered alert is harmless.
   - Final dedup happens at the Backend, which has a real database and
     enforces a unique index on alert_uuid.
 """
@@ -47,27 +47,35 @@ SECURITY_NOTIFY_TOKEN = os.getenv("SECURITY_NOTIFY_TOKEN")
 # Tune this if you want it more/less aggressive.
 AUTO_ACTION_PRIORITIES = {"Emergency", "Alert", "Critical", "Error", "Warning"}
 
-# Namespaces that are never auto-actioned, regardless of alert priority —
-# self-preservation so a Falco/Deployer alert about itself can't take down
-# the thing doing the watching/acting. Set to "" (empty string) via env var
-# to disable this and truly act on everything Falco watches, no exceptions.
-_default_protect = "falco,buet-paas-system-team23"
-SELF_PROTECT_NAMESPACES = {
-    ns.strip()
-    for ns in os.getenv("SELF_PROTECT_NAMESPACES", _default_protect).split(",")
-    if ns.strip()
+# Self-protection is scoped by POD NAME PREFIX, not namespace. Build-job
+# pods (owned by a Job) and the Deployer's own pod (paas-deployer-...) both
+# live in buet-paas-system-team23 — an earlier revision of this file
+# excluded that whole namespace, which correctly protected the Deployer but
+# ALSO silently blocked any action on build jobs, defeating the point of
+# watching them. Matching only the Deployer's own pod name prefix fixes
+# that: build-job pods (named "{app}-{user}-build-job-{hash}") are never
+# matched by "paas-deployer" and remain fully actionable.
+# Set to "" (empty string) via env var to disable this entirely.
+_default_protect_prefixes = "paas-deployer"
+SELF_PROTECT_POD_PREFIXES = {
+    p.strip()
+    for p in os.getenv("SELF_PROTECT_POD_PREFIXES", _default_protect_prefixes).split(",")
+    if p.strip()
 }
+# Falco's own namespace is still fully excluded by namespace — nothing else
+# (no build jobs, no student apps) ever runs there, so this is a harmless,
+# simple guard rather than a namespace-wide loophole like the old one was.
+SELF_PROTECT_NAMESPACES = {"falco"}
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _resolve_owning_deployment(namespace: str, pod_name: str) -> str | None:
-    """Pod -> ReplicaSet -> Deployment, via ownerReferences. Returns the
-    Deployment name, or None if it can't be resolved (e.g. a bare pod, a
-    Job-owned build pod with no Deployment ancestor, or the pod's already
-    gone)."""
+def _resolve_action_target(namespace: str, pod_name: str):
+    """Pod -> owner, classified as either a Deployment (via ReplicaSet) or
+    a Job (direct owner). Returns (kind, name) where kind is "deployment"
+    or "job", or (None, None) if it can't be resolved."""
     k3s_client = _require_kube_client()
     core_api = client.CoreV1Api(k3s_client)
     apps_api = client.AppsV1Api(k3s_client)
@@ -76,22 +84,29 @@ def _resolve_owning_deployment(namespace: str, pod_name: str) -> str | None:
         pod = core_api.read_namespaced_pod(name=pod_name, namespace=namespace)
     except client.exceptions.ApiException as exc:
         logger.warning("Could not read pod %s/%s: %s", namespace, pod_name, exc)
-        return None
+        return None, None
 
     owners = pod.metadata.owner_references or []
+
+    job_owner = next((o for o in owners if o.kind == "Job"), None)
+    if job_owner:
+        return "job", job_owner.name
+
     rs_owner = next((o for o in owners if o.kind == "ReplicaSet"), None)
     if not rs_owner:
-        return None
+        return None, None
 
     try:
         rs = apps_api.read_namespaced_replica_set(name=rs_owner.name, namespace=namespace)
     except client.exceptions.ApiException as exc:
         logger.warning("Could not read ReplicaSet %s/%s: %s", namespace, rs_owner.name, exc)
-        return None
+        return None, None
 
     rs_owners = rs.metadata.owner_references or []
     deploy_owner = next((o for o in rs_owners if o.kind == "Deployment"), None)
-    return deploy_owner.name if deploy_owner else None
+    if deploy_owner:
+        return "deployment", deploy_owner.name
+    return None, None
 
 
 def _scale_to_zero(namespace: str, deployment_name: str) -> bool:
@@ -108,6 +123,32 @@ def _scale_to_zero(namespace: str, deployment_name: str) -> bool:
         return True
     except client.exceptions.ApiException as exc:
         logger.error("Failed to scale %s/%s to 0: %s", namespace, deployment_name, exc)
+        return False
+
+
+def _delete_job(namespace: str, job_name: str) -> bool:
+    """Deletes the Job immediately (Background propagation — doesn't wait
+    for the pod to finish terminating). Kaniko only pushes the finished
+    image to Harbor as its LAST step, after every Dockerfile instruction
+    has run — killing the Job before that point prevents a compromised
+    image from ever landing in the registry, even though it can't undo
+    whatever already executed.
+
+    Treats a 404 (already deleted, e.g. a duplicate-delivered alert) as
+    success rather than an error — keeps this idempotent like scale-to-0."""
+    k3s_client = _require_kube_client()
+    batch_api = client.BatchV1Api(k3s_client)
+    try:
+        batch_api.delete_namespaced_job(
+            name=job_name,
+            namespace=namespace,
+            body=client.V1DeleteOptions(propagation_policy="Background"),
+        )
+        return True
+    except client.exceptions.ApiException as exc:
+        if exc.status == 404:
+            return True
+        logger.error("Failed to delete job %s/%s: %s", namespace, job_name, exc)
         return False
 
 
@@ -140,23 +181,30 @@ def receive_falco_alert():
 
     tier = "auto_action" if priority in AUTO_ACTION_PRIORITIES else "notify_only"
     action_taken = "none"
-    deployment_name = None
+    target_kind = None
+    target_name = None
+
+    is_self_protected = (
+        namespace in SELF_PROTECT_NAMESPACES
+        or (pod_name and any(pod_name.startswith(p) for p in SELF_PROTECT_POD_PREFIXES))
+    )
 
     if not namespace or not pod_name:
         # Alert didn't carry pod context (e.g. a host-level event, not a
         # container one) — nothing to act on, just forward for visibility.
         tier = "notify_only"
-    elif namespace in SELF_PROTECT_NAMESPACES:
-        action_taken = "skipped_self_protect_namespace"
+    elif is_self_protected:
+        action_taken = "skipped_self_protect"
     elif tier == "auto_action":
-        deployment_name = _resolve_owning_deployment(namespace, pod_name)
-        if deployment_name:
-            scaled = _scale_to_zero(namespace, deployment_name)
+        target_kind, target_name = _resolve_action_target(namespace, pod_name)
+        if target_kind == "job":
+            deleted = _delete_job(namespace, target_name)
+            action_taken = "job_deleted" if deleted else "job_delete_failed"
+        elif target_kind == "deployment":
+            scaled = _scale_to_zero(namespace, target_name)
             action_taken = "scaled_to_zero" if scaled else "scale_failed"
         else:
-            # Common for build-Job pods: owned by a Job, not a Deployment,
-            # so there's nothing to scale down. Notify-only in that case.
-            action_taken = "no_owning_deployment_found"
+            action_taken = "no_owning_resource_found"
 
     record = {
         "alert_uuid": payload.get("uuid"),
@@ -166,7 +214,8 @@ def receive_falco_alert():
         "output": payload.get("output"),
         "k8s_namespace": namespace,
         "k8s_pod_name": pod_name,
-        "deployment_name": deployment_name,
+        "target_kind": target_kind,
+        "target_name": target_name,
         "action_taken": action_taken,
         "hostname": payload.get("hostname"),
         "event_time": payload.get("time"),

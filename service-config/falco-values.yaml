@@ -74,3 +74,41 @@ customRules:
               or proc.exepath contains "/node_modules/.bin/"
               or proc.exepath contains "/.local/bin/"
               or proc.exepath contains "/go/bin/"))
+
+    # --- Network-egress detection for build-job pods. This exists because
+    # --- binary-identity signals (the exception above, or any process-name
+    # --- allowlist) CANNOT distinguish a legitimate `node`/`npm` invocation
+    # --- from a malicious one — a compromised `postinstall` script runs
+    # --- through the exact same trusted binary, at the exact same path, as
+    # --- a normal build. Network behavior is a materially different signal:
+    # --- a build job's legitimate traffic is narrow (DNS, git/Harbor over
+    # --- HTTPS) and doesn't need arbitrary ports.
+    # ---
+    # --- HONEST LIMITATION: this catches C2/exfiltration on a non-standard
+    # --- port, but NOT exfiltration over HTTPS (443) to an attacker-controlled
+    # --- domain — that's indistinguishable from a legitimate git/Harbor call
+    # --- without a domain-level allowlist (e.g. GitHub's published IP
+    # --- ranges), which is a real but separate follow-up, not implemented
+    # --- here. Worth flagging to the supervisor as a known residual gap.
+    - list: buet_paas_allowed_outbound_ports
+      items: [53, 443]
+    - list: buet_paas_harbor_ip
+      items: ["192.168.128.152"]
+    - rule: Unexpected outbound connection from build job
+      desc: >
+        A build-job pod made an outbound connection outside its expected
+        pattern (DNS, HTTPS to git/Harbor, or the Harbor registry IP
+        directly). Build jobs run untrusted student Dockerfiles, so an
+        unusual destination port is a strong signal of C2 or exfiltration.
+      condition: >
+        outbound
+        and container.name = "paas-builder"
+        and k8s.pod.name contains "-build-job-"
+        and not (fd.rport in (buet_paas_allowed_outbound_ports))
+        and not (fd.rip in (buet_paas_harbor_ip))
+      output: >
+        Unexpected outbound connection from build job (command=%proc.cmdline
+        connection=%fd.name dest_ip=%fd.rip dest_port=%fd.rport
+        pod=%k8s.pod.name ns=%k8s.ns.name image=%container.image.repository)
+      priority: CRITICAL
+      tags: [network, mitre_exfiltration, mitre_command_and_control, buet-paas]
