@@ -86,6 +86,10 @@ user_config = {
     #     "NODE_ENV": "production",
     #     "DATABASE_URL": "postgres://user:pass@db-service:5432/mydb"
     # },
+    # "build_args": {
+    #     "APP_ENV": "production",
+    #     "VERSION": "1.0.0"
+    # },
 
     # Health Checks & Lifecycle [healt_path is advanced settings, by default no health checks are configured]
     # "health_path": "/healthz",                   # HTTP GET path for Liveness/Readiness probes
@@ -150,7 +154,11 @@ def build_image(user_config: Dict[str, Any]):
     builder.apply_git_cloner(git_url=user_config["git_url"], branch=user_config.get("git_branch", "main"))
     # builder.apply_trivy_scan(severity="CRITICAL,HIGH", fail_on_cve=True)
     user_config["image"] = f"{user_config['app_name']}-{user_config['namespace']}-build:latest"
-    builder.apply_kaniko_build(image_destination=user_config["image"], dockerfile_path=user_config.get("dockerfile_path", "Dockerfile"))
+    builder.apply_kaniko_build(
+        image_destination=user_config["image"],
+        dockerfile_path=user_config.get("dockerfile_path", "Dockerfile"),
+        build_args=user_config.get("build_args", {}),
+    )
     build_conf = builder.build()
     utils.create_from_dict(k3s_client, build_conf)
     return build_conf
@@ -256,6 +264,48 @@ def check_build_status(name: str, namespace: str):
         }
 
 
+def get_build_logs(name: str, namespace: str):
+    """Return logs from every Pod created for the app's build Job."""
+    if not name or not namespace:
+        raise ValueError("Both 'name' and 'namespace' are required.")
+
+    _require_kube_client()
+    job_name = f"{name}-{namespace}-build-job"
+    core_api = client.CoreV1Api(k3s_client)
+    pods = core_api.list_namespaced_pod(
+        namespace=builder_namespace,
+        label_selector=f"job-name={job_name}",
+    ).items
+    logs = []
+    for pod in pods:
+        container_name = "paas-builder"
+        try:
+            pod_logs = core_api.read_namespaced_pod_log(
+                name=pod.metadata.name,
+                namespace=builder_namespace,
+                container=container_name,
+            )
+            logs.append({
+                "pod_name": pod.metadata.name,
+                "container": container_name,
+                "logs": pod_logs,
+            })
+        except client.exceptions.ApiException as exc:
+            logs.append({
+                "pod_name": pod.metadata.name,
+                "container": container_name,
+                "logs": None,
+                "error": str(exc),
+                "http_status": exc.status,
+            })
+
+    return {
+        "job_name": job_name,
+        "namespace": builder_namespace,
+        "logs": logs,
+    }
+
+
 def check_deploy_status(name: str, namespace: str):
     """Return deployment status together with a human-readable summary and reason."""
     if not name or not namespace:
@@ -346,6 +396,49 @@ def check_deploy_status(name: str, namespace: str):
             "reason": str(exc),
             "details": {"deployment_name": deployment_name, "http_status": exc.status},
         }
+
+
+def get_deploy_logs(name: str, namespace: str):
+    """Return logs from every Pod selected by the app deployment label."""
+    if not name or not namespace:
+        raise ValueError("Both 'name' and 'namespace' are required.")
+
+    _require_kube_client()
+    core_api = client.CoreV1Api(k3s_client)
+    pods = core_api.list_namespaced_pod(
+        namespace=namespace,
+        label_selector=f"app={name}",
+    ).items
+    logs = []
+    for pod in pods:
+        pod_name = pod.metadata.name
+        container_names = [container.name for container in (pod.spec.containers or [])]
+        pod_logs = []
+        for container_name in container_names:
+            try:
+                container_logs = core_api.read_namespaced_pod_log(
+                    name=pod_name,
+                    namespace=namespace,
+                    container=container_name,
+                )
+                pod_logs.append({
+                    "container": container_name,
+                    "logs": container_logs,
+                })
+            except client.exceptions.ApiException as exc:
+                pod_logs.append({
+                    "container": container_name,
+                    "logs": None,
+                    "error": str(exc),
+                    "http_status": exc.status,
+                })
+        logs.append({"pod_name": pod_name, "containers": pod_logs})
+
+    return {
+        "deployment_name": f"{name}-deployment",
+        "namespace": namespace,
+        "logs": logs,
+    }
 
 
 def create_namespace_if_not_exists(namespace: str):

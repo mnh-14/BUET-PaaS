@@ -37,11 +37,14 @@ EOF
 fi
 
 
-
 /kaniko/executor \
   --context=dir:///workspace \
   --dockerfile="/workspace/${DOCKERFILE_PATH:-Dockerfile}" \
   --destination="${IMAGE_DESTINATION}" \
   --cache=true \
+  --cache-copy-layers=true \
+  --compressed-caching=false \
+  --snapshot-mode=redo \
+  --use-new-run \
   ${EXTRA_FLAGS}
 echo "✓ Kaniko build complete."
