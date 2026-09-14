@@ -5,34 +5,17 @@
 # helm install/upgrade command).
 #
 # Reversibility notes (see falco-integration-plan.md §6 for full detail):
-#   - To change alert volume later, edit `falcosidekick.config.minimumpriority`
+#   - To change alert volume later, edit falcosidekick.config.minimumpriority
 #     below and re-run falco-setup.sh (it upgrades in place, doesn't reinstall).
 #   - To point at the real backend once it exists, edit
-#     `falcosidekick.config.webhook.address` below.
+#     falcosidekick.config.webhook.address below.
 
-# --- Driver: avoids privileged containers, no kernel headers/DKMS needed on
-# --- Ubuntu 24.04 worker VMs (kernel 5.15+, CO-RE eBPF support).
 driver:
   kind: modern_ebpf
 
-# --- Scope: full cluster, including platform namespaces (kube-system,
-# --- metallb-system, paas-system, buet-paas-system-team23) as well as
-# --- student namespaces. No namespaceSelector restriction is set here on
-# --- purpose — see falco-integration-plan.md §6 for how to narrow this
-# --- later via a rule exception instead of redeploying.
-
-# --- Falcosidekick: deployed as a subchart of the same release so one
-# --- helm command manages both Falco and Falcosidekick together.
 falcosidekick:
   enabled: true
   config:
-    # warning = default noise level. Set to "debug" to see everything while
-    # testing, or "critical" to only see severe events. One-line change +
-    # falco-setup.sh re-run, nothing else needs touching.
     minimumpriority: warning
     webhook:
-      # TEMPORARY: point at a throwaway test receiver until the backend
-      # team builds POST /api/v1/security/falco-alert (see plan §5).
-      # Replace this with the real backend URL once it exists, then re-run
-      # falco-setup.sh.
-      address: "<TEST_RECEIVER_URL_HERE>"
+      address: "https://webhook.site/5b5f1448-5206-427e-b26f-74e12ff63e26"
