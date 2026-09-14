@@ -23,9 +23,10 @@ RUN pip install --upgrade pip && \
         python-dotenv==1.0.1
 
 # Copy only the deployer application sources. No kubeconfig or host-specific files.
-COPY deploy.py /app/deploy.py
 COPY k3s_conf.py /app/k3s_conf.py
 COPY deploy_service.py /app/deploy_service.py
+COPY deploy_utils /app/deploy_utils
+COPY routes /app/routes
 
 RUN chown -R app:app /app
 
