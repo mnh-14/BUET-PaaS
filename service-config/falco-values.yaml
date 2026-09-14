@@ -31,8 +31,30 @@ falcosidekick:
     # falco-setup.sh re-run, nothing else needs touching.
     minimumpriority: warning
     webhook:
-      # TEMPORARY: point at a throwaway test receiver until the backend
-      # team builds POST /api/v1/security/falco-alert (see plan §5).
-      # Replace this with the real backend URL once it exists, then re-run
-      # falco-setup.sh.
-      address: "<TEST_RECEIVER_URL_HERE>"
+      # Points at the Deployer (deploy_service.py / falco_routes.py), which
+      # handles the alert directly (mitigate if warranted) and then notifies
+      # the Backend downstream. NOT the backend URL — see
+      # falco-integration-plan.md §5.
+      address: "http://<deploy-service-cluster-ip-or-ingress>:5000/api/security/falco-alert"
+      customHeaders: "X-Falco-Token:<shared-secret>"
+
+# --- Custom rule exception: build-job false positive on "Drop and execute
+# --- new binary in container" (priority Critical, would hit AUTO_ACTION).
+# --- Every Node.js build job installs deps at runtime (npm install writes
+# --- node_modules/.bin/next etc. into the writable layer, then executes it)
+# --- — this is normal, unavoidable build behavior, not an attack, and fires
+# --- on every single student Next.js build without this exception.
+# ---
+# --- Deliberately narrow: only exempts recognized build-tool process names
+# --- running from known build-tool paths, NOT the whole builder image —
+# --- keeps detection alive for a genuinely unexpected binary (e.g. a
+# --- reverse shell hidden in a malicious postinstall script) dropped
+# --- anywhere else inside the same build job. Extend the proc.name list as
+# --- you add more build tool support (python/pip, go, cargo, etc.) in
+# --- builder-config/Dockerfile.
+customRules:
+  rules-buet-paas-exceptions.yaml: |-
+    - macro: known_drop_and_execute_activities
+      condition: >
+        (proc.name in (npm, npx, next, node, yarn, pnpm, tsc, webpack, vite)
+         and proc.exepath startswith /app/node_modules/.bin/)
