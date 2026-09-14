@@ -169,11 +169,11 @@ def _format_kubectl_result(command, result):
 	return f"$ {command}\n{output.rstrip()}\n"
 
 
-def _safe_pod_log(api, pod_name, container_name, previous=False):
+def _safe_pod_log(api, namespace, pod_name, container_name, previous=False):
 	try:
 		return api.read_namespaced_pod_log(
 			pod_name,
-			NAMESPACE,
+			namespace,
 			container=container_name,
 			previous=previous,
 			timestamps=True,
@@ -182,12 +182,12 @@ def _safe_pod_log(api, pod_name, container_name, previous=False):
 		return f"[Unable to read logs: {exc.reason}]"
 
 
-def _safe_exec(api, pod_name, command, container_name):
+def _safe_exec(api, namespace, pod_name, command, container_name):
 	try:
 		result = stream(
 			api.connect_get_namespaced_pod_exec,
 			name=pod_name,
-			namespace=NAMESPACE,
+			namespace=namespace,
 			command=command,
 			container=container_name,
 			stderr=True,
@@ -200,14 +200,14 @@ def _safe_exec(api, pod_name, command, container_name):
 		return f"[Unable to execute command: {exc.reason}]"
 
 
-def _write_pod_diagnostics(api, label_selector, filename, parent_reader=None, parent_command=None):
+def _write_pod_diagnostics(api, namespace, label_selector, filename, parent_reader=None, parent_command=None):
 	"""Write kubectl-style diagnostics without printing the report to the terminal."""
 	_progress(f"Collecting Kubernetes diagnostics for selector '{label_selector}'")
 	LOG_DIR.mkdir(parents=True, exist_ok=True)
 	sections = [
 		"BUET-PaaS Kubernetes Diagnostic Report",
 		f"Generated: {datetime.now(timezone.utc).isoformat()}",
-		f"Namespace: {NAMESPACE}",
+		f"Namespace: {namespace}",
 		f"Pod selector: {label_selector}",
 		"",
 		"Each section shows the kubectl command to reproduce the captured output.",
@@ -216,16 +216,16 @@ def _write_pod_diagnostics(api, label_selector, filename, parent_reader=None, pa
 
 	try:
 		# Equivalent to: kubectl get deployment,service,ingress,pods -n random-user-a
-		pods = api.list_namespaced_pod(NAMESPACE, label_selector=label_selector).items
+		pods = api.list_namespaced_pod(namespace, label_selector=label_selector).items
 		apps_api = client.AppsV1Api(api.api_client)
 		networking_api = client.NetworkingV1Api(api.api_client)
-		deployments = apps_api.list_namespaced_deployment(NAMESPACE).items
-		services = api.list_namespaced_service(NAMESPACE).items
-		ingresses = networking_api.list_namespaced_ingress(NAMESPACE).items
+		deployments = apps_api.list_namespaced_deployment(namespace).items
+		services = api.list_namespaced_service(namespace).items
+		ingresses = networking_api.list_namespaced_ingress(namespace).items
 		sections.extend([
 			"## Resource listing\n",
 			_format_kubectl_result(
-				f"kubectl get deployment,service,ingress,pods -n {NAMESPACE}",
+				f"kubectl get deployment,service,ingress,pods -n {namespace}",
 				{
 					"deployments": [_resource_dict(item) for item in deployments],
 					"services": [_resource_dict(item) for item in services],
@@ -238,14 +238,14 @@ def _write_pod_diagnostics(api, label_selector, filename, parent_reader=None, pa
 		# Equivalent to: kubectl get deployment calculator-deployment -n random-user-a -o yaml
 		deployment_name = f"{user_config['app_name']}-deployment"
 		try:
-			deployment = apps_api.read_namespaced_deployment(deployment_name, NAMESPACE)
+			deployment = apps_api.read_namespaced_deployment(deployment_name, namespace)
 			deployment_result = _resource_dict(deployment)
 		except client.exceptions.ApiException as exc:
 			deployment_result = f"[Unable to read deployment: {exc.reason}]"
 		sections.extend([
 			"## Deployment manifest\n",
 			_format_kubectl_result(
-				f"kubectl get deployment {deployment_name} -n {NAMESPACE} -o yaml",
+				f"kubectl get deployment {deployment_name} -n {namespace} -o yaml",
 				deployment_result,
 			),
 		])
@@ -258,8 +258,8 @@ def _write_pod_diagnostics(api, label_selector, filename, parent_reader=None, pa
 				sections.extend([
 					f"## Current logs: {pod_name} / {container.name}\n",
 					_format_kubectl_result(
-						f"kubectl logs {pod_name} -n {NAMESPACE} -c {container.name} -f",
-						_safe_pod_log(api, pod_name, container.name),
+						f"kubectl logs {pod_name} -n {namespace} -c {container.name} -f",
+						_safe_pod_log(api, namespace, pod_name, container.name),
 					),
 				])
 
@@ -267,8 +267,8 @@ def _write_pod_diagnostics(api, label_selector, filename, parent_reader=None, pa
 				sections.extend([
 					f"## Previous logs: {pod_name} / {container.name}\n",
 					_format_kubectl_result(
-						f"kubectl logs -l app={user_config['app_name']} -n {NAMESPACE} -c {container.name} --previous",
-						_safe_pod_log(api, pod_name, container.name, previous=True),
+						f"kubectl logs -l app={user_config['app_name']} -n {namespace} -c {container.name} --previous",
+						_safe_pod_log(api, namespace, pod_name, container.name, previous=True),
 					),
 				])
 
@@ -276,8 +276,8 @@ def _write_pod_diagnostics(api, label_selector, filename, parent_reader=None, pa
 				sections.extend([
 					f"## Nginx configuration: {pod_name} / {container.name}\n",
 					_format_kubectl_result(
-						f"kubectl exec -it {pod_name} -n {NAMESPACE} -c {container.name} -- cat /etc/nginx/conf.d/default.conf",
-						_safe_exec(api, pod_name, ["cat", "/etc/nginx/conf.d/default.conf"], container.name),
+						f"kubectl exec -it {pod_name} -n {namespace} -c {container.name} -- cat /etc/nginx/conf.d/default.conf",
+						_safe_exec(api, namespace, pod_name, ["cat", "/etc/nginx/conf.d/default.conf"], container.name),
 					),
 				])
 
@@ -292,13 +292,13 @@ def _write_pod_diagnostics(api, label_selector, filename, parent_reader=None, pa
 
 		# Events explain scheduling, image-pull, probe, and mount failures.
 		events = api.list_namespaced_event(
-			NAMESPACE,
-			field_selector=f"involvedObject.namespace={NAMESPACE}",
+			namespace,
+			field_selector=f"involvedObject.namespace={namespace}",
 		).items
 		sections.extend([
 			"## Kubernetes events\n",
 			_format_kubectl_result(
-				f"kubectl get events -n {NAMESPACE} --field-selector involvedObject.namespace={NAMESPACE}",
+				f"kubectl get events -n {namespace} --field-selector involvedObject.namespace={namespace}",
 				[_resource_dict(event) for event in events],
 			),
 		])
@@ -392,6 +392,7 @@ def test_build_pipeline():
 		job_name = f"{user_config['app_name']}-{NAMESPACE}-build-job"
 		_write_pod_diagnostics(
 			api,
+			BUILD_NAMESPACE,
 			f"app={user_config['app_name']},paas-stage=build-job",
 			f"build_logs-{_diagnostic_timestamp()}.txt",
 			parent_reader=lambda: client.BatchV1Api(api.api_client).read_namespaced_job(job_name, BUILD_NAMESPACE),
@@ -431,6 +432,7 @@ def test_deploy_pipeline():
 		deployment_name = f"{user_config['app_name']}-deployment"
 		_write_pod_diagnostics(
 			api,
+			NAMESPACE,
 			f"app={user_config['app_name']}",
 			f"deploy_logs-{_diagnostic_timestamp()}.txt",
 			parent_reader=lambda: client.AppsV1Api(api.api_client).read_namespaced_deployment(deployment_name, NAMESPACE),
