@@ -23,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from security_routes import create_security_router
 
 from auth import (
     clear_session_cookie,
@@ -1092,3 +1093,4 @@ async def sonarqube_health():
 
 
 app.include_router(create_github_router(build_and_deploy))
+app.include_router(create_security_router())

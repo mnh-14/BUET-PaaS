@@ -60,6 +60,13 @@ def tunnels_col() -> Collection:
     """
     return get_db()["tunnels"]
 
+def security_events_col() -> Collection:
+    """
+    One document per security incident, notified by the Deployer after
+    handling a Falco alert.
+    """
+    return get_db()["security_events"]
+
 def github_installations_col() -> Collection:
     return get_db()["github_installations"]
 
@@ -108,6 +115,9 @@ def init_indexes():
     github_webhook_deliveries_col().create_index(
         "expires_at", expireAfterSeconds=0
     )
+    security_events_col().create_index("alert_uuid", unique=True)
+    security_events_col().create_index([("k8s_namespace", ASCENDING),
+                                        ("received_at", DESCENDING)])
     projects_col().create_index(
         [
             ("github_installation_id", ASCENDING),
