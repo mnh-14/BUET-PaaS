@@ -31,12 +31,15 @@ falcosidekick:
     # falco-setup.sh re-run, nothing else needs touching.
     minimumpriority: warning
     webhook:
-      # Points at the Deployer (deploy_service.py / falco_routes.py), which
-      # handles the alert directly (mitigate if warranted) and then notifies
-      # the Backend downstream. NOT the backend URL — see
-      # falco-integration-plan.md §5.
-      address: "http://<deploy-service-cluster-ip-or-ingress>:5000/api/security/falco-alert"
-      customHeaders: "X-Falco-Token:<shared-secret>"
+      # In-cluster Service DNS name for the Deployer (deploy_service.py /
+      # routes/security.py), port 80 -> targetPort 5000 per
+      # service-config/deploy-service-config.yaml's Service block. Not the
+      # backend URL — see falco-integration-plan.md §5.
+      address: "http://paas-deployer.buet-paas-system-team23.svc.cluster.local/api/security/falco-alert"
+      # customHeaders (the shared-secret token) is intentionally NOT set
+      # here — it's a secret, so it's supplied via a local, gitignored
+      # override file instead. See service-config/falco-values.local.yaml.example
+      # and falco-setup.sh, which layers that file in automatically if present.
 
 # --- Custom rule exception: build-job false positive on "Drop and execute
 # --- new binary in container" (priority Critical, would hit AUTO_ACTION).

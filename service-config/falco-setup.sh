@@ -18,7 +18,19 @@ set -euo pipefail
 
 NAMESPACE="falco"
 RELEASE_NAME="falco"
-VALUES_FILE="$(dirname "$0")/falco-values.yaml"
+SCRIPT_DIR="$(dirname "$0")"
+VALUES_FILE="${SCRIPT_DIR}/falco-values.yaml"
+LOCAL_VALUES_FILE="${SCRIPT_DIR}/falco-values.local.yaml"
+
+HELM_VALUE_ARGS=(--values "${VALUES_FILE}")
+if [[ -f "${LOCAL_VALUES_FILE}" ]]; then
+  echo "Found ${LOCAL_VALUES_FILE} — layering it on top (holds the real shared-secret token, gitignored)."
+  HELM_VALUE_ARGS+=(--values "${LOCAL_VALUES_FILE}")
+else
+  echo "WARNING: ${LOCAL_VALUES_FILE} not found — Falcosidekick's webhook will have no"
+  echo "X-Falco-Token header set. Copy falco-values.local.yaml.example to"
+  echo "falco-values.local.yaml and fill in the real token before relying on this in production."
+fi
 
 echo "[1/4] Checking helm is installed..."
 if ! command -v helm &> /dev/null; then
@@ -37,7 +49,7 @@ helm repo update falcosecurity
 echo "[4/4] Installing/upgrading Falco + Falcosidekick..."
 helm upgrade --install "${RELEASE_NAME}" falcosecurity/falco \
   --namespace "${NAMESPACE}" \
-  --values "${VALUES_FILE}"
+  "${HELM_VALUE_ARGS[@]}"
 
 echo ""
 echo "Done. Verify with:"
