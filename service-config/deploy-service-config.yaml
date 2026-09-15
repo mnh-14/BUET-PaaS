@@ -61,7 +61,7 @@ spec:
       serviceAccountName: paas-deployer
       containers:
         - name: paas-deployer
-          image: 192.168.128.152/paas-builders/deploy-service-image:v1.10
+          image: 192.168.128.152/paas-builders/deploy-service-image:v2.2
           imagePullPolicy: Always
           ports:
             - containerPort: 5000
