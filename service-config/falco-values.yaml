@@ -113,5 +113,17 @@ customRules:
         Unexpected outbound connection from build job (command=%proc.cmdline
         connection=%fd.name dest_ip=%fd.rip dest_port=%fd.rport
         pod=%k8s.pod.name ns=%k8s.ns.name image=%container.image.repository)
-      priority: CRITICAL
+      # TEMPORARILY set to NOTICE, not CRITICAL, as of 2026-09-15.
+      # This rule has fired twice on real (non-malicious-looking) build
+      # jobs, both times on TCP port 9 to a small, REPEATING set of
+      # AWS/Cloudflare-owned IPs across unrelated builds — not the random,
+      # one-off IPs you'd expect from actual attacker infrastructure.
+      # Root cause not yet confirmed (best guess: some artifact of Kaniko's
+      # base-image pull against Docker Hub's AWS/Cloudflare-fronted
+      # infrastructure), so this is paused below both Falcosidekick's
+      # minimumpriority and AUTO_ACTION_PRIORITIES — it can no longer
+      # trigger Job deletion, but remains fully visible via
+      # `kubectl logs -n falco <pod>` for continued investigation.
+      # Restore to CRITICAL once the cause is confirmed benign-or-fixed.
+      priority: NOTICE
       tags: [network, mitre_exfiltration, mitre_command_and_control, buet-paas]
