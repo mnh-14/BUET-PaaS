@@ -3,7 +3,12 @@ venv/
 env/
 .env
 .env.*
+!.env.example
+*.pem
+*.key
+github-app-private-key*
 __pycache__/
+.pytest_cache/
 *.pyc
 *.pyo
 .vscode/

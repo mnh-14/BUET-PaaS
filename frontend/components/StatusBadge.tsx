@@ -14,6 +14,22 @@ const statusConfig: Record<
     label: "Cloning",
     classes: "bg-blue-900/50 text-blue-300 border border-blue-800",
   },
+  security_scan_running: {
+    label: "Security Scan",
+    classes: "bg-violet-900/50 text-violet-300 border border-violet-800",
+  },
+  security_scan_passed: {
+    label: "Scan Passed",
+    classes: "bg-green-900/50 text-green-300 border border-green-800",
+  },
+  security_scan_failed: {
+    label: "Security Failed",
+    classes: "bg-red-900/50 text-red-300 border border-red-800",
+  },
+  security_scan_error: {
+    label: "Scan Error",
+    classes: "bg-red-900/50 text-red-300 border border-red-800",
+  },
   building: {
     label: "Building",
     classes: "bg-amber-900/50 text-amber-300 border border-amber-800",
@@ -50,7 +66,9 @@ export default function StatusBadge({ status }: StatusBadgeProps) {
         className={`w-1.5 h-1.5 rounded-full ${
           status === "running"
             ? "bg-green-400 animate-pulse"
-            : status === "failed"
+            : status === "failed" ||
+              status === "security_scan_failed" ||
+              status === "security_scan_error"
             ? "bg-red-400"
             : "bg-current opacity-60"
         }`}

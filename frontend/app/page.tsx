@@ -6,12 +6,12 @@ import { useAuth } from "@/context/AuthContext";
 import AuthForm from "@/components/AuthForm";
 
 export default function LandingPage() {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
-    if (user) router.replace("/dashboard");
-  }, [user, router]);
+    if (!loading && user) router.replace("/dashboard");
+  }, [user, loading, router]);
 
   return (
     <main className="min-h-screen bg-[#0d0d0d] flex flex-col items-center justify-center px-4 py-12">

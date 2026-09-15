@@ -20,7 +20,8 @@ RUN pip install --upgrade pip && \
         flask==3.0.3 \
         gunicorn==22.0.0 \
         kubernetes==30.1.0 \
-        python-dotenv==1.0.1
+        python-dotenv==1.0.1 \
+        requests==2.32.3
 
 # Copy only the deployer application sources. No kubeconfig or host-specific files.
 COPY k3s_conf.py /app/k3s_conf.py

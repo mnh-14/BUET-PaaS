@@ -5,8 +5,15 @@ BUET-PaaS is a prototype Platform-as-a-Service environment with:
 - A Next.js frontend
 - A Python/FastAPI backend
 - A MongoDB database
+- One central GitHub App webhook supporting authorized public and private repositories
 
 This README covers running the frontend and MongoDB using Docker. For backend setup and execution, follow the backend documentation in `backend/readme.md`.
+
+## GitHub App deployment flow
+
+Students authenticate to BUET-PaaS, install the shared GitHub App, select an authorized repository and branch, and deploy an exact commit. Future pushes arrive through one signed endpoint, `/api/v1/github/webhook`. The backend generates short-lived installation tokens only when calling GitHub or cloning a private repository; tokens never reach the frontend or MongoDB.
+
+The former 30-second GitHub poller is deprecated and is not part of normal startup. See `backend/readme.md` for GitHub App settings, Cloudflare Quick/Named Tunnel ingress, environment variables, secret rules, testing, and troubleshooting.
 
 ## Prerequisites
 

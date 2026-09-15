@@ -24,6 +24,9 @@ kubectl -n "$NAMESPACE" create secret generic "$SECRET_NAME" \
   --from-literal=DEFAULT_PRIVATE_IP="${DEFAULT_PRIVATE_IP}" \
   --from-literal=DEFAULT_FLOATING_IP="${DEFAULT_FLOATING_IP}" \
   --from-literal=DEFAULT_HARBOR_IP="${DEFAULT_HARBOR_IP}" \
+  --from-literal=FALCO_WEBHOOK_TOKEN="${FALCO_WEBHOOK_TOKEN}" \
+  --from-literal=SECURITY_NOTIFY_TOKEN="${SECURITY_NOTIFY_TOKEN}" \
+  --from-literal=BACKEND_NOTIFY_URL="${BACKEND_NOTIFY_URL}" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "Secret '$SECRET_NAME' created/updated in namespace '$NAMESPACE'."

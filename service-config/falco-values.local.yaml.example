@@ -1,0 +1,21 @@
+# service-config/falco-values.local.yaml.example
+#
+# Copy this file to falco-values.local.yaml (same directory) and fill in the
+# real token. falco-values.local.yaml is gitignored (see .gitignore's
+# `service-config/*.local.yaml` pattern) — it never gets committed, matching
+# how HARBOR_PASS etc. are handled via the local .env + inject-deployer-secrets.sh.
+#
+# falco-setup.sh automatically layers this file on top of falco-values.yaml
+# if it exists, so the real token never needs to touch the committed file.
+#
+# Generate a token with:
+#   openssl rand -hex 32
+#
+# The SAME value must also be set as FALCO_WEBHOOK_TOKEN in the Deployer's
+# secret (service-config/.env, injected via inject-deployer-secrets.sh) —
+# that's what routes/security.py checks incoming requests against.
+
+falcosidekick:
+  config:
+    webhook:
+      customHeaders: "X-Falco-Token:REPLACE_WITH_THE_SAME_TOKEN_AS_FALCO_WEBHOOK_TOKEN"

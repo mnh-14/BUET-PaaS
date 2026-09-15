@@ -1,5 +1,14 @@
 database/*
 !database/plan.txt
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+github-app-private-key*
+__pycache__/
+.pytest_cache/
+
 
 # Local secret files for cluster bootstrapping
 .env

