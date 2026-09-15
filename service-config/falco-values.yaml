@@ -96,6 +96,34 @@ customRules:
         (container.name = "paas-builder"
          and k8s.pod.name contains "-build-job-")
 
+    # --- Two more structural false positives, discovered via a live test
+    # --- build (2026-09-15): Kaniko's /kaniko/executor process itself opens
+    # --- /etc/shadow and /var/log/apk.log while unpacking and snapshotting
+    # --- the student's Alpine base image — mechanical filesystem processing,
+    # --- not credential theft or log tampering. Same root cause as the
+    # --- drop-and-execute false positive: Kaniko's architecture makes normal
+    # --- base-image handling look anomalous to rules that assume they're
+    # --- watching an already-running container.
+    # ---
+    # --- Both are STOCK Falco rules (not ours), so — unlike the network
+    # --- rule — these are NOT blanket-downgraded. Only the build-job-pod
+    # --- case is exempted via each rule's own official override macro;
+    # --- both rules stay fully active at their original severity for every
+    # --- other pod in the cluster (student apps, platform pods, etc.).
+    # ---
+    # --- These were WARNING priority and inside AUTO_ACTION_PRIORITIES —
+    # --- one of them killed a real, successfully-progressing build during
+    # --- testing before this exception was added.
+    - macro: user_known_read_sensitive_files_activities
+      condition: >
+        (container.name = "paas-builder"
+         and k8s.pod.name contains "-build-job-")
+
+    - macro: allowed_clear_log_files
+      condition: >
+        (container.name = "paas-builder"
+         and k8s.pod.name contains "-build-job-")
+
     # --- Network-egress detection for build-job pods. This exists because
     # --- binary-identity signals (the exception above, or any process-name
     # --- allowlist) CANNOT distinguish a legitimate `node`/`npm` invocation
