@@ -21,9 +21,6 @@ export default function Navbar() {
             <span className="hidden sm:block text-sm text-gray-400 font-mono">
               {user.name}
             </span>
-            <span className="text-xs text-[#c8f135] font-mono bg-[#c8f135]/10 px-2.5 py-1 rounded-full border border-[#c8f135]/20">
-              ⚡ {user.credit_balance} credits
-            </span>
             <button
               onClick={logout}
               className="text-sm text-gray-400 hover:text-gray-100 transition-colors"

@@ -459,7 +459,7 @@ export default function ProjectDetailPage() {
                 />
 
                 {latestDeployment.status_message && (
-                  <p className="text-xs font-mono text-gray-400 -mt-2 mb-4">
+                  <p className="text-xs font-mono text-gray-400 mt-4 mb-4">
                     {latestDeployment.status_message}
                   </p>
                 )}
