@@ -418,7 +418,11 @@ export default function ProjectDetailPage() {
                   <button
                     onClick={handleRedeploy}
                     disabled={redeployLoading || checkingUpdate || !canDeploy}
-                    className="text-sm font-mono px-4 py-2 rounded-xl border border-[#c8f135]/30 text-[#c8f135] hover:bg-[#c8f135]/10 transition-colors disabled:opacity-50"
+                    className={
+                      redeployLoading || checkingUpdate || !canDeploy
+                        ? "text-sm font-mono px-4 py-2 rounded-xl border border-[#2a2a2a] text-gray-600 cursor-not-allowed"
+                        : "text-sm font-mono px-4 py-2 rounded-xl border border-[#c8f135]/30 text-[#c8f135] hover:bg-[#c8f135]/10 transition-colors"
+                    }
                   >
                     {redeployLoading ? "Starting…" : "Deploy latest commit"}
                   </button>
