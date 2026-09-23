@@ -1343,6 +1343,40 @@ NO_KUBERNETES_JOB_STATUSES = {
     "security_scan_failed", "security_scan_error",
 }
 
+_ANSI_COLOR_RE = re.compile(r"(?:\x1b)?\[\d+(?:;\d+)*m")
+_LOG_NOISE_RES = [
+    re.compile(r"Retrieving image manifest"),
+    re.compile(r"Returning cached image manifest"),
+    re.compile(r"Resolved base name .* to "),
+    re.compile(r"Executing 0 build triggers"),
+]
+
+
+def _clean_log_lines(lines: list[str]) -> list[str]:
+    """Strip ANSI color codes, drop known-noisy Kaniko chatter, and collapse
+    consecutive duplicate lines so the log stream reads as a build narrative
+    instead of a raw firehose."""
+    cleaned: list[str] = []
+    previous: str | None = None
+    repeat_count = 0
+
+    def flush():
+        if previous is None:
+            return
+        cleaned.append(f"{previous} (×{repeat_count})" if repeat_count > 1 else previous)
+
+    for raw_line in lines:
+        line = _ANSI_COLOR_RE.sub("", raw_line).rstrip()
+        if not line or any(pattern.search(line) for pattern in _LOG_NOISE_RES):
+            continue
+        if line == previous:
+            repeat_count += 1
+            continue
+        flush()
+        previous, repeat_count = line, 1
+    flush()
+    return cleaned
+
 
 @app.get("/api/v1/deployments/{deployment_id}/logs")
 async def deployment_logs(deployment_id: str, user: dict = Depends(require_user)):
@@ -1361,9 +1395,12 @@ async def deployment_logs(deployment_id: str, user: dict = Depends(require_user)
     app_name = kubernetes_name(project.get("app_name") or project["project_name"])
     kube = KubernetesService()
     sent_lengths: dict[tuple[str, str, str], int] = {}
+    pending_line: dict[tuple[str, str, str], str] = {}
 
     def _new_chunks(source: str) -> list[dict[str, str]]:
-        """Fetch one log snapshot from the deployer and return only newly appended text."""
+        """Fetch one log snapshot from the deployer, keep only newly appended
+        text, and emit it as cleaned, complete lines (holding back any
+        trailing partial line until it's completed on a later poll)."""
         try:
             if source == "build":
                 result = kube.get_build_logs(app_name, namespace)
@@ -1378,7 +1415,8 @@ async def deployment_logs(deployment_id: str, user: dict = Depends(require_user)
                     for entry in result.get("logs", [])
                     for container in entry.get("containers", [])
                 ]
-        except KubernetesDeploymentError:
+        except KubernetesDeploymentError as exc:
+            print(f"  [{deployment_id[:8]}] {source} log fetch failed: {exc}")
             return []
 
         chunks = []
@@ -1386,14 +1424,36 @@ async def deployment_logs(deployment_id: str, user: dict = Depends(require_user)
             text = text or ""
             key = (source, pod, container)
             previous_len = sent_lengths.get(key, 0)
-            if len(text) > previous_len:
+            if len(text) <= previous_len:
+                continue
+            sent_lengths[key] = len(text)
+
+            buffered = pending_line.get(key, "") + text[previous_len:]
+            *complete_lines, remainder = buffered.split("\n")
+            pending_line[key] = remainder
+
+            cleaned_lines = _clean_log_lines(complete_lines)
+            if cleaned_lines:
                 chunks.append({
                     "source": source,
                     "pod": pod,
                     "container": container,
-                    "text": text[previous_len:],
+                    "text": "\n".join(cleaned_lines) + "\n",
                 })
-            sent_lengths[key] = len(text)
+        return chunks
+
+    def _flush_pending() -> list[dict[str, str]]:
+        """Emit any trailing partial lines once the job has finished."""
+        chunks = []
+        for (source, pod, container), remainder in pending_line.items():
+            cleaned_lines = _clean_log_lines([remainder]) if remainder else []
+            if cleaned_lines:
+                chunks.append({
+                    "source": source,
+                    "pod": pod,
+                    "container": container,
+                    "text": "\n".join(cleaned_lines) + "\n",
+                })
         return chunks
 
     async def stream():
@@ -1420,6 +1480,8 @@ async def deployment_logs(deployment_id: str, user: dict = Depends(require_user)
                 yield ": keepalive\n\n"
 
             if status in DEPLOYMENT_TERMINAL_STATUSES:
+                for chunk in _flush_pending():
+                    yield f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n"
                 return
             await asyncio.sleep(poll_interval)
 

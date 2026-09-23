@@ -79,7 +79,7 @@ function Pipeline({
 }) {
   const normalizedStatus =
     status === "security_scan_passed" ? "build_queued" : status;
-  const currentIdx = STAGES.indexOf(normalizedStatus);
+  const targetIdx = STAGES.indexOf(normalizedStatus);
   const securityFailed =
     status === "security_scan_failed" || status === "security_scan_error";
   const failed = status === "failed" || securityFailed;
@@ -90,7 +90,24 @@ function Pipeline({
     ? STAGES.indexOf("security_scan_running")
     : recordedFailedIdx >= 0
       ? recordedFailedIdx
-      : Math.max(currentIdx, 0);
+      : Math.max(targetIdx, 0);
+
+  // Status updates are polled server-side, so a fast stage (e.g. a quick
+  // security scan) can be overwritten before it's ever read from the DB and
+  // sent down. Step forward one stage at a time instead of snapping straight
+  // to the latest status, so every stage still gets a visible "current" beat.
+  const [displayedIdx, setDisplayedIdx] = useState(targetIdx);
+
+  useEffect(() => {
+    if (failed || targetIdx < 0 || displayedIdx >= targetIdx) return;
+    const timer = setTimeout(
+      () => setDisplayedIdx((idx) => Math.min(idx + 1, targetIdx)),
+      500,
+    );
+    return () => clearTimeout(timer);
+  }, [displayedIdx, targetIdx, failed]);
+
+  const currentIdx = failed ? targetIdx : displayedIdx;
 
   return (
     <div className="flex items-center gap-0 overflow-x-auto py-2">
@@ -436,9 +453,16 @@ export default function ProjectDetailPage() {
                 </h2>
 
                 <Pipeline
+                  key={latestDeployment.deployment_id}
                   status={latestDeployment.status}
                   failedStage={latestDeployment.failed_stage}
                 />
+
+                {latestDeployment.status_message && (
+                  <p className="text-xs font-mono text-gray-400 -mt-2 mb-4">
+                    {latestDeployment.status_message}
+                  </p>
+                )}
 
                 <SecurityScanPanel deployment={latestDeployment} />
                 <DeploymentFailurePanel deployment={latestDeployment} />
