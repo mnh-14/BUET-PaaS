@@ -41,6 +41,22 @@ falcosidekick:
       # override file instead. See service-config/falco-values.local.yaml.example
       # and falco-setup.sh, which layers that file in automatically if present.
 
+  # --- Falcosidekick-UI: a real-time web view of every alert Falco/Falcosidekick
+  # --- has forwarded (rule, priority, timestamp, source), with basic filtering
+  # --- and stats. Added as a stopgap while the real backend dashboard
+  # --- (security_events_col / GET /api/v1/security/events) is still blocked
+  # --- on Himel's access — this is NOT a replacement for that, just visibility
+  # --- for the team in the meantime. Needs Redis, which this same chart
+  # --- deploys automatically when redis.enabled=true (no separate install).
+  # --- Login credentials are a secret, so like the webhook token they're set
+  # --- in the local, gitignored override file — see
+  # --- falco-values.local.yaml.example.
+  webui:
+    enabled: true
+    replicaCount: 1
+    redis:
+      enabled: true
+
 # --- Custom rule exception: build-job false positive on "Drop and execute
 # --- new binary in container" (priority Critical, would hit AUTO_ACTION).
 # ---
