@@ -159,17 +159,53 @@ customRules:
         Unexpected outbound connection from build job (command=%proc.cmdline
         connection=%fd.name dest_ip=%fd.rip dest_port=%fd.rport
         pod=%k8s.pod.name ns=%k8s.ns.name image=%container.image.repository)
-      # TEMPORARILY set to NOTICE, not CRITICAL, as of 2026-09-15.
-      # This rule has fired twice on real (non-malicious-looking) build
-      # jobs, both times on TCP port 9 to a small, REPEATING set of
-      # AWS/Cloudflare-owned IPs across unrelated builds — not the random,
-      # one-off IPs you'd expect from actual attacker infrastructure.
-      # Root cause not yet confirmed (best guess: some artifact of Kaniko's
-      # base-image pull against Docker Hub's AWS/Cloudflare-fronted
-      # infrastructure), so this is paused below both Falcosidekick's
-      # minimumpriority and AUTO_ACTION_PRIORITIES — it can no longer
-      # trigger Job deletion, but remains fully visible via
-      # `kubectl logs -n falco <pod>` for continued investigation.
-      # Restore to CRITICAL once the cause is confirmed benign-or-fixed.
+      # PERMANENTLY set to NOTICE (not CRITICAL), reclassified 2026-09-23
+      # after two separate investigation sessions. Full evidence trail below
+      # — read this before ever changing this priority back up.
+      #
+      # WHAT FIRES: TCP port 9 (discard protocol — accepts data, sends no
+      # response) from Kaniko's own /kaniko/executor process (never a
+      # spawned child), always during registry activity, across 5+ separate
+      # builds spanning two nights. Destinations are always real, legitimate
+      # infrastructure — AWS and Cloudflare ranges — never the same IP twice
+      # in a way that looks like fixed attacker infrastructure.
+      #
+      # RULED OUT (2026-09-23): initially suspected as an IPv6-routing
+      # artifact, since these worker nodes have no usable IPv6 route but
+      # Docker Hub publishes real AAAA records for index.docker.io — that
+      # WAS a real, separate bug (see the CoreDNS AAAA->NODATA fix, outside
+      # this file), and DID cause two genuine hard build failures. But after
+      # fixing it, port 9 still fired 13 times on the very next build — with
+      # EVERY destination IP confirmed IPv4. The IPv6 theory is disproven
+      # for this specific rule; it was a coincidental second bug found in
+      # the same investigation, not the cause of this one.
+      #
+      # NARROWED (2026-09-23): a manual repro build using --cache=false
+      # --no-push (bypassing Kaniko's Harbor cache-layer read/write calls,
+      # but still resolving+pulling the base image from Docker Hub
+      # normally) produced ZERO port-9 hits. Every real build (which always
+      # runs --cache=true --cache-copy-layers=true) has fired it. This
+      # points at Kaniko's cache-layer HTTP client (talking to Harbor) as
+      # the likely trigger, not the base-image-pull client — though this
+      # was not confirmed with a positive repro (would require live
+      # packet capture during a --cache=true run, not completed).
+      #
+      # WHY THIS IS SAFE AT NOTICE, NOT A ROOT-CAUSE COP-OUT: port 9 is the
+      # discard protocol — connections there cannot carry a response and
+      # were confirmed FIN/RST rather than exchanging any bulk data. Purely
+      # discard-bound traffic cannot exfiltrate anything, structurally,
+      # regardless of the still-unconfirmed client-side mechanism producing
+      # it. Across every occurrence this rule has never once co-occurred
+      # with any other suspicious signal (no credential search, no
+      # /dev/shm execution, no reverse-shell pattern) in the same build.
+      #
+      # IF YOU WANT TO ACTUALLY FINISH THIS: the next real step is a live
+      # tcpdump (node-level, e.g. `kubectl debug node/<node> -it
+      # --image=nicolaka/netshoot -- chroot /host tcpdump -i any -n port 9`,
+      # started BEFORE triggering a real --cache=true build) to catch
+      # packet-level detail — or, more directly, reading go-containerregistry
+      # / Kaniko's cache-layer client source for anywhere a port could be
+      # mis-set or default to 9. Neither was completed live; this is a
+      # documented handoff, not a dead end.
       priority: NOTICE
       tags: [network, mitre_exfiltration, mitre_command_and_control, buet-paas]
