@@ -58,7 +58,18 @@ def check_deploy_status(name: str, namespace: str):
 			return {"status": "Running", "summary": f"Deployment '{deployment_name}' has ready replicas.", "reason": "At least one replica is ready.", "details": details, "url": f"http://{name}.{namespace}.{default_floating_ip}.sslip.io"}
 		if details["replicas"] > 0:
 			return {"status": "Pending", "summary": f"Deployment '{deployment_name}' is waiting for replicas.", "reason": "Replicas exist but none are ready yet.", "details": details}
-		return {"status": "Unknown", "summary": f"Deployment '{deployment_name}' has no active replicas.", "reason": "No ready or desired replicas were reported.", "details": details}
+		# No conditions, no replica counts at all â this isn't a genuine
+		# "unknown" state, it's the brief window immediately after a
+		# Deployment is created, before Kubernetes has populated *any*
+		# status fields yet. Treating this as terminal "Unknown" (as it
+		# was previously) caused a real test failure: polling this
+		# endpoint milliseconds after deploy_application() creates the
+		# Deployment would see this exact empty-everything state and stop
+		# polling immediately, even though pods were already
+		# ContainerCreating normally moments later. "Pending" is the
+		# honest description â rollout hasn't reported in yet, not that
+		# something is actually wrong or unclear.
+		return {"status": "Pending", "summary": f"Deployment '{deployment_name}' has not reported status yet.", "reason": "No conditions or replica counts have been reported yet â this is normal immediately after creation.", "details": details}
 	except client.exceptions.ApiException as exc:
 		if exc.status == 404:
 			return {"status": "Unknown", "summary": f"Deployment '{deployment_name}' was not found.", "reason": f"Kubernetes returned HTTP 404 in namespace '{namespace}'.", "details": {"deployment_name": deployment_name, "http_status": exc.status}}

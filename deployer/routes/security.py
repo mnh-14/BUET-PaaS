@@ -33,6 +33,18 @@ from deploy_utils.kubernetes import _require_kube_client
 
 
 logger = logging.getLogger(__name__)
+# Python's root logger defaults to WARNING, and the "handler of last resort"
+# that made our earlier error/warning logs visible in `kubectl logs` only
+# applies to WARNING+ — a plain logger.info() here would be silently
+# swallowed without this. Scoped to just this module (own handler,
+# propagate=False) rather than a global logging.basicConfig(), so this
+# doesn't also make the kubernetes client / urllib3's own loggers verbose.
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(_handler)
+    logger.propagate = False
 
 security_routes = Blueprint("security_routes", __name__)
 
@@ -75,7 +87,13 @@ def _now_iso() -> str:
 def _resolve_action_target(namespace: str, pod_name: str):
     """Pod -> owner, classified as either a Deployment (via ReplicaSet) or
     a Job (direct owner). Returns (kind, name) where kind is "deployment"
-    or "job", or (None, None) if it can't be resolved."""
+    or "job", or (None, None) if it can't be resolved.
+
+    A 404 here is expected, not an error: Falcosidekick can (and does)
+    deliver the same alert more than once, and by the time a duplicate
+    arrives the first delivery may have already deleted the Job (which
+    cascades to deleting its pod too). Logged at INFO, not WARNING/ERROR,
+    so real problems aren't lost in routine duplicate-alert noise."""
     k3s_client = _require_kube_client()
     core_api = client.CoreV1Api(k3s_client)
     apps_api = client.AppsV1Api(k3s_client)
@@ -83,7 +101,14 @@ def _resolve_action_target(namespace: str, pod_name: str):
     try:
         pod = core_api.read_namespaced_pod(name=pod_name, namespace=namespace)
     except client.exceptions.ApiException as exc:
-        logger.warning("Could not read pod %s/%s: %s", namespace, pod_name, exc)
+        if exc.status == 404:
+            logger.info(
+                "Pod %s/%s already gone (likely a duplicate alert for an "
+                "already-mitigated target) — nothing to do.",
+                namespace, pod_name,
+            )
+        else:
+            logger.warning("Could not read pod %s/%s: %s", namespace, pod_name, exc)
         return None, None
 
     owners = pod.metadata.owner_references or []
@@ -99,7 +124,13 @@ def _resolve_action_target(namespace: str, pod_name: str):
     try:
         rs = apps_api.read_namespaced_replica_set(name=rs_owner.name, namespace=namespace)
     except client.exceptions.ApiException as exc:
-        logger.warning("Could not read ReplicaSet %s/%s: %s", namespace, rs_owner.name, exc)
+        if exc.status == 404:
+            logger.info(
+                "ReplicaSet %s/%s already gone (likely a duplicate alert) — "
+                "nothing to do.", namespace, rs_owner.name,
+            )
+        else:
+            logger.warning("Could not read ReplicaSet %s/%s: %s", namespace, rs_owner.name, exc)
         return None, None
 
     rs_owners = rs.metadata.owner_references or []
@@ -221,6 +252,17 @@ def receive_falco_alert():
         "event_time": payload.get("time"),
         "notified_at": _now_iso(),
     }
+
+    # Always logged, success or not — previously this route only logged on
+    # failure paths (inside the helper functions), so confirming what
+    # actually happened to a given alert required cross-referencing Falco's
+    # own pod logs by hand. This line alone should answer "what did the
+    # Deployer do with alert X" from `kubectl logs deployment/paas-deployer`.
+    logger.info(
+        "Falco alert processed | rule=%r priority=%s tier=%s pod=%s/%s "
+        "target=%s/%s action=%s",
+        rule, priority, tier, namespace, pod_name, target_kind, target_name, action_taken,
+    )
 
     _notify_backend(record)
 

@@ -1,5 +1,6 @@
 """Build operations exposed by the deployer service."""
 
+import time
 from typing import Any, Dict
 
 from kubernetes import client, utils
@@ -7,6 +8,72 @@ from kubernetes import client, utils
 from .config import builder_namespace
 from .kubernetes import _require_kube_client, k3s_client
 from k3s_conf import JobPipelineBuilder
+
+
+def _delete_finished_job_if_present(job_name: str, wait_timeout_seconds: float = 30.0) -> None:
+	"""If a Job with this name already exists and has genuinely finished
+	(succeeded or failed, not still active), delete it before creating a
+	new one with the same name.
+
+	Job names here are deterministic ({app_name}-{namespace}-build-job), and
+	completed Jobs have a ttlSecondsAfterFinished (see k3s_conf.py) that
+	cleans them up automatically, but that TTL exists to give a supervisor
+	a window to inspect a recent failure, not to block a legitimate rebuild
+	that happens to land inside that window. Without this check, rebuilding
+	the same app twice within the TTL window fails with a raw Kubernetes
+	409 Conflict instead of just... rebuilding.
+
+	Deliberately does NOT touch a Job that's still active, deleting a
+	build that's genuinely in progress out from under the person who
+	started it would be a much worse failure mode than a clear "already
+	running" error.
+
+	CORRECTNESS NOTE (fixed after a real failure): propagation_policy=
+	"Foreground" does NOT make delete_namespaced_job() block until the Job
+	is actually gone -- the API call returns as soon as deletion is
+	initiated (the object enters Terminating state), not when it is fully
+	removed. An earlier version of this function assumed otherwise and
+	immediately tried to create the replacement Job, which Kubernetes
+	correctly rejected with "object is being deleted... already exists".
+	This version actually polls for the Job to disappear (404) before
+	returning.
+	"""
+	batch_api = client.BatchV1Api(k3s_client)
+	try:
+		existing = batch_api.read_namespaced_job(name=job_name, namespace=builder_namespace)
+	except client.exceptions.ApiException as exc:
+		if exc.status == 404:
+			return
+		raise
+
+	status = existing.status
+	is_finished = bool(getattr(status, "succeeded", 0) or getattr(status, "failed", 0))
+	if not is_finished:
+		raise RuntimeError(
+			f"Build job '{job_name}' is already running. Wait for it to "
+			f"finish, or check /api/build/status before starting a new one."
+		)
+
+	batch_api.delete_namespaced_job(
+		name=job_name,
+		namespace=builder_namespace,
+		body=client.V1DeleteOptions(propagation_policy="Foreground"),
+	)
+
+	deadline = time.monotonic() + wait_timeout_seconds
+	while time.monotonic() < deadline:
+		try:
+			batch_api.read_namespaced_job(name=job_name, namespace=builder_namespace)
+		except client.exceptions.ApiException as exc:
+			if exc.status == 404:
+				return
+			raise
+		time.sleep(0.5)
+
+	raise RuntimeError(
+		f"Timed out waiting for old build job '{job_name}' to finish "
+		f"deleting after {wait_timeout_seconds}s. Try again shortly."
+	)
 
 
 def build_image(user_config: Dict[str, Any]):
@@ -22,6 +89,7 @@ def build_image(user_config: Dict[str, Any]):
 		build_args=user_config.get("build_args", {}),
 	)
 	build_conf = builder.build()
+	_delete_finished_job_if_present(build_conf["metadata"]["name"])
 	utils.create_from_dict(k3s_client, build_conf)
 	return build_conf
 
