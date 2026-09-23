@@ -105,7 +105,7 @@ class KubernetesService:
             os.getenv("KUBERNETES_STATUS_POLL_INTERVAL", "5")
         )
         self.request_timeout = request_timeout if request_timeout is not None else float(
-            os.getenv("KUBERNETES_REQUEST_TIMEOUT", "15")
+            os.getenv("KUBERNETES_REQUEST_TIMEOUT", "45")
         )
 
     def _headers(self) -> dict[str, str]:
