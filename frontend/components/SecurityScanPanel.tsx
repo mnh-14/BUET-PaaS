@@ -11,6 +11,16 @@ const METRIC_LABELS: Record<string, string> = {
   security_hotspots_reviewed: "Security hotspots reviewed",
 };
 
+// Once the deployment has moved on to actually building/deploying, the
+// "scan passed" confirmation is stale news — show it only while that stage
+// is still the current/most-recent thing that happened.
+const SECURITY_SCAN_PASSED_VISIBLE_STATUSES = new Set([
+  "cloning",
+  "security_scan_running",
+  "security_scan_passed",
+  "build_queued",
+]);
+
 function conditionText(condition: SecurityScanCondition): string {
   const label = METRIC_LABELS[condition.metric] ?? condition.metric.replaceAll("_", " ");
   const values = [
@@ -45,6 +55,7 @@ export default function SecurityScanPanel({ deployment }: { deployment: Deployme
   }
 
   if (scan?.status === "passed") {
+    if (!SECURITY_SCAN_PASSED_VISIBLE_STATUSES.has(deployment.status)) return null;
     return (
       <div className="mt-6 p-4 bg-green-900/20 border border-green-800/40 rounded-xl text-sm text-green-300">
         SonarQube Quality Gate passed for commit {scan.commit_sha?.slice(0, 12)}.
