@@ -303,12 +303,16 @@ class KubernetesService:
         operation: str,
         timeout: float,
         on_update: Callable[[dict[str, Any]], None],
+        failure_grace_seconds: float | None = None,
     ) -> dict[str, Any]:
+        if failure_grace_seconds is None:
+            failure_grace_seconds = float(os.getenv("KUBERNETES_FAILURE_GRACE_SECONDS", "20"))
         deadline = time.monotonic() + timeout
         previous_status = None
         consecutive_errors = 0
         last_result: dict[str, Any] | None = None
         poll_number = 0
+        first_failed_at: float | None = None
         logger.warning(
             "Kubernetes %s polling started (app=%s, namespace=%s, timeout=%ss, interval=%ss)",
             operation,
@@ -344,20 +348,39 @@ class KubernetesService:
                 time.sleep(self.poll_interval)
                 continue
             if status == "failed":
-                api_summary = result.get("summary")
-                api_reason = result.get("reason")
-                raise KubernetesDeploymentError(
-                    str(api_summary or f"Kubernetes {operation} failed"),
-                    reason=str(
-                        api_reason
-                        or result.get("error")
-                        or result.get("message")
-                        or f"The Kubernetes {operation} reported failure."
-                    ),
-                    details=result.get("details")
-                    if isinstance(result.get("details"), dict)
-                    else {},
+                now = time.monotonic()
+                if first_failed_at is None:
+                    first_failed_at = now
+                    logger.warning(
+                        "Kubernetes %s reported failed (poll=%s); waiting up to %ss "
+                        "in case a still-running attempt finishes successfully before "
+                        "treating this as final",
+                        operation, poll_number, failure_grace_seconds,
+                    )
+                elif now - first_failed_at >= failure_grace_seconds:
+                    api_summary = result.get("summary")
+                    api_reason = result.get("reason")
+                    raise KubernetesDeploymentError(
+                        str(api_summary or f"Kubernetes {operation} failed"),
+                        reason=str(
+                            api_reason
+                            or result.get("error")
+                            or result.get("message")
+                            or f"The Kubernetes {operation} reported failure."
+                        ),
+                        details=result.get("details")
+                        if isinstance(result.get("details"), dict)
+                        else {},
+                    )
+                time.sleep(self.poll_interval)
+                continue
+            if first_failed_at is not None:
+                logger.warning(
+                    "Kubernetes %s recovered from a failed reading (poll=%s, "
+                    "new_status=%s) before the grace period elapsed",
+                    operation, poll_number, status,
                 )
+                first_failed_at = None
             if status != previous_status:
                 on_update(result)
                 previous_status = status
