@@ -41,6 +41,7 @@ from deployment_config import (
 from kubernetes_service import KubernetesDeploymentError, KubernetesService
 from github_app import GitHubAppService
 from github_routes import create_github_router
+from security_routes import create_security_router
 from services.sonarqube_service import (
     SonarQubeError,
     SonarQubeService,
@@ -1659,3 +1660,4 @@ async def sonarqube_health():
 
 
 app.include_router(create_github_router())
+app.include_router(create_security_router())
