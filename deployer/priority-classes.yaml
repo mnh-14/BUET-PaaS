@@ -16,3 +16,13 @@ metadata:
 value: 1000
 globalDefault: false
 description: "Kaniko build jobs yield resources to live webapps."
+
+---
+# 3. Highest Priority for Per-User Stateful Databases
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: data-rank
+value: 2000000
+globalDefault: false
+description: "Per-user provisioned databases (PostgreSQL/Redis/MongoDB) supersede app pods so they are never evicted under memory pressure."

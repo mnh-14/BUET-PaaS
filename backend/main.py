@@ -32,10 +32,14 @@ from auth import (
     set_session_cookie,
     verify_password,
 )
-from config import GitHubAppSettings, SonarSettings
+from config import DatabaseProvisionSettings, GitHubAppSettings, SonarSettings
 from deployment_service import queue_deployment
 from github_app import GitHubAppService
 from github_routes import create_github_router
+from services.database_service import (
+    RESERVED_ENV_KEYS,
+    DatabaseService,
+)
 from services.sonarqube_service import (
     SonarQubeError,
     SonarQubeService,
@@ -49,6 +53,7 @@ from db import (
     tunnels_col,
     github_connections_col,
     github_installations_col,
+    user_databases_col,
     init_indexes,
     ping
 )
@@ -569,6 +574,16 @@ def build_and_deploy(
 
         # ── 5. Run ──────────────────────────────────────────────
         set_status("starting")
+        # Merge student env vars with provisioned database URLs (DBs win).
+        # The merge is best-effort: a database catalog outage must never
+        # block the application deployment pipeline.
+        deploy_env = env_vars
+        try:
+            deploy_env = DatabaseService(DatabaseProvisionSettings.from_env()).build_deploy_env(
+                project_id, env_vars
+            )
+        except Exception as exc:
+            print(f"  [{deployment_id[:8]}] [DB] database env merge skipped: {exc}")
         # Build docker run command — inject env vars if provided
         docker_cmd = [
             "docker", "run", "-d",
@@ -577,8 +592,8 @@ def build_and_deploy(
             "-p", f"{port}:{container_port}",
             "--restart", "unless-stopped",
         ]
-        if env_vars:
-            for key, value in env_vars.items():
+        if deploy_env:
+            for key, value in deploy_env.items():
                 docker_cmd += ["-e", f"{key}={value}"]
         docker_cmd.append(image_tag)
 
@@ -798,6 +813,17 @@ def create_project(
     now = datetime.now(timezone.utc)
     project_id = f"proj-{uuid.uuid4().hex[:8]}"
 
+    reserved_conflict = RESERVED_ENV_KEYS.intersection(body.env_vars)
+    if reserved_conflict:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Environment variable(s) {', '.join(sorted(reserved_conflict))} are "
+                f"reserved for the platform-managed databases. Add the database from "
+                f"the project page instead."
+            ),
+        )
+
     if body.github_installation_id is not None or body.github_repo_id is not None:
         if body.github_installation_id is None or body.github_repo_id is None:
             raise HTTPException(status_code=400, detail="GitHub installation and repository IDs are both required")
@@ -945,6 +971,25 @@ def delete_project(
     enforce_same_origin(request)
     if not projects_col().find_one({"project_id": project_id, "user_id": user["user_id"]}):
         raise HTTPException(status_code=404, detail="Project not found.")
+    # Best-effort cascade: deprovision any managed databases with the project.
+    db_service = DatabaseService(DatabaseProvisionSettings.from_env())
+    for db_doc in user_databases_col().find(
+        {"project_id": project_id, "status": {"$ne": "deprovisioned"}}
+    ):
+        try:
+            db_service.deprovision(user, project_id, db_doc["database_id"])
+        except Exception as exc:
+            # Never let a failed DB cleanup block project deletion.
+            user_databases_col().update_one(
+                {"database_id": db_doc["database_id"]},
+                {"$set": {
+                    "status": "deprovisioned",
+                    "connection_internal": None,
+                    "connection_external": None,
+                    "deprovisioned_at": datetime.now(timezone.utc),
+                }},
+            )
+            print(f"  [DELETE] Database {db_doc['database_id']} cleanup skipped: {exc}")
     result = subprocess.run(
         ["docker", "rm", "-f", project_id],
         capture_output=True, text=True
@@ -1036,6 +1081,16 @@ def update_env_vars(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
 
+    reserved_conflict = RESERVED_ENV_KEYS.intersection(body.env_vars)
+    if reserved_conflict:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Environment variable(s) {', '.join(sorted(reserved_conflict))} are "
+                f"reserved for the platform-managed databases."
+            ),
+        )
+
     projects_col().update_one(
         {"project_id": project_id},
         {"$set": {"env_vars": body.env_vars}}
@@ -1055,6 +1110,77 @@ def get_env_vars(project_id: str, user: dict = Depends(require_user)):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     return {"env_vars": project.get("env_vars", {})}
+
+
+class DatabaseProvisionRequest(BaseModel):
+    engine: str
+    size_gb: int | None = None
+    overwrite: bool = False
+
+
+@app.post("/api/v1/projects/{project_id}/databases", status_code=202)
+def provision_database(
+    project_id: str,
+    body: DatabaseProvisionRequest,
+    request: Request,
+    user: dict = Depends(require_user),
+):
+    """Provision a per-user managed database (PostgreSQL/Redis/MongoDB)."""
+    enforce_same_origin(request)
+    service = DatabaseService(DatabaseProvisionSettings.from_env())
+    return service.provision(
+        user, project_id, body.engine, body.size_gb, body.overwrite
+    )
+
+
+@app.get("/api/v1/projects/{project_id}/databases")
+def list_databases(project_id: str, user: dict = Depends(require_user)):
+    """List a project's managed databases with credentials hidden."""
+    service = DatabaseService(DatabaseProvisionSettings.from_env())
+    return {"databases": service.list_databases(user, project_id)}
+
+
+@app.delete("/api/v1/projects/{project_id}/databases/{database_id}")
+def deprovision_database(
+    project_id: str,
+    database_id: str,
+    request: Request,
+    user: dict = Depends(require_user),
+):
+    """Deprovision a managed database (persistent data is retained)."""
+    enforce_same_origin(request)
+    service = DatabaseService(DatabaseProvisionSettings.from_env())
+    return service.deprovision(user, project_id, database_id)
+
+
+@app.post(
+    "/api/v1/projects/{project_id}/databases/{database_id}/rotate",
+    status_code=200,
+)
+def rotate_database(
+    project_id: str,
+    database_id: str,
+    request: Request,
+    user: dict = Depends(require_user),
+):
+    """Rotate a database's credentials and return the new full connection URL."""
+    enforce_same_origin(request)
+    service = DatabaseService(DatabaseProvisionSettings.from_env())
+    return service.rotate(user, project_id, database_id)
+
+
+@app.get(
+    "/api/v1/projects/{project_id}/databases/{database_id}/status",
+)
+def refresh_database_status(
+    project_id: str,
+    database_id: str,
+    user: dict = Depends(require_user),
+):
+    """Re-read a database's live status from the cluster."""
+    service = DatabaseService(DatabaseProvisionSettings.from_env())
+    status = service.refresh_status(user, project_id, database_id)
+    return {"database_id": database_id, "status": status}
 
 
 @app.get("/health")

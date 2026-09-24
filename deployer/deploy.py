@@ -1,7 +1,12 @@
 import os
 import sys, pprint
-from typing import Dict, Any
-from k3s_conf import JobPipelineBuilder, PaaSManifestBuilder
+from typing import Dict, Any, List
+from k3s_conf import (
+    DATABASE_ENGINES,
+    DatabaseManifestBuilder,
+    JobPipelineBuilder,
+    PaaSManifestBuilder,
+)
 from kubernetes import client, config, utils
 
 
@@ -363,6 +368,264 @@ def create_namespace_if_not_exists(namespace: str):
             print(f"Namespace '{namespace}' created.")
         else:
             raise 
+
+
+# ==============================================================================
+# PER-USER DATABASE ORCHESTRATION (PostgreSQL / MongoDB / Redis on k3s)
+# ==============================================================================
+
+def _apply_database_manifests(manifest_list: Dict[str, Any], namespace: str) -> None:
+    """
+    Applies Secret → Service → StatefulSet individually so a rerun of the same
+    provision request is idempotent (already-existing resources are skipped).
+    """
+    _require_kube_client()
+    core_api = client.CoreV1Api(k3s_client)
+    apps_api = client.AppsV1Api(k3s_client)
+
+    for manifest in manifest_list["items"]:
+        kind = manifest["kind"]
+        name = manifest["metadata"]["name"]
+        try:
+            if kind == "Secret":
+                core_api.create_namespaced_secret(namespace, manifest)
+            elif kind == "Service":
+                core_api.create_namespaced_service(namespace, manifest)
+            elif kind == "StatefulSet":
+                apps_api.create_namespaced_stateful_set(namespace, manifest)
+            else:  # pragma: no cover - defensive
+                continue
+            print(f"  [DB] Created {kind} '{name}' in '{namespace}'.")
+        except client.exceptions.ApiException as exc:
+            if exc.status == 409:
+                print(f"  [DB] {kind} '{name}' already exists — skipping.")
+            else:
+                raise
+
+
+def provision_database(user_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Create the per-user database workload and return the exposed node port."""
+    if not isinstance(user_config, dict):
+        raise ValueError("user_config must be a dictionary")
+    _require_kube_client()
+
+    namespace = user_config["namespace"]
+    create_namespace_if_not_exists(namespace)
+
+    builder = DatabaseManifestBuilder(config=user_config)
+    manifest_list = builder.build_all_listed()
+    _apply_database_manifests(manifest_list, namespace)
+
+    node_port = None
+    if user_config.get("external", False):
+        service_name = f"{builder.app_name}-database-service"
+        core_api = client.CoreV1Api(k3s_client)
+        service = core_api.read_namespaced_service(name=service_name, namespace=namespace)
+        ports = getattr(service.spec, "ports", []) or []
+        for entry in ports:
+            if getattr(entry, "node_port", None):
+                node_port = int(entry.node_port)
+                break
+
+    return {
+        "status": "success",
+        "app_name": builder.app_name,
+        "namespace": namespace,
+        "engine": builder.engine,
+        "node_port": node_port,
+        "message": f"Database '{builder.app_name}' provisioning submitted.",
+        "manifest": manifest_list,
+    }
+
+
+def rotate_database_credentials(user_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Replace the DB credentials Secret with new values and force the pod to
+    restart so the engine picks up the rotated credentials. Data is preserved.
+    """
+    if not isinstance(user_config, dict):
+        raise ValueError("user_config must be a dictionary")
+    _require_kube_client()
+
+    builder = DatabaseManifestBuilder(config=user_config)
+    namespace = builder.namespace
+    secret_name = f"{builder.app_name}-database-secret"
+    core_api = client.CoreV1Api(k3s_client)
+
+    secret_manifest = builder.build_secret()
+    try:
+        core_api.replace_namespaced_secret(
+            name=secret_name, namespace=namespace, body=secret_manifest
+        )
+        print(f"  [DB] Rotated Secret '{secret_name}' in '{namespace}'.")
+    except client.exceptions.ApiException as exc:
+        if exc.status == 404:
+            core_api.create_namespaced_secret(namespace, secret_manifest)
+            print(f"  [DB] Recreated missing Secret '{secret_name}'.")
+        else:
+            raise
+
+    # Restart the single stateful pod so it re-reads credentials from the Secret.
+    pod_name = f"{builder.app_name}-database-0"
+    try:
+        core_api.delete_namespaced_pod(name=pod_name, namespace=namespace)
+        print(f"  [DB] Restarting pod '{pod_name}'.")
+    except client.exceptions.ApiException as exc:
+        if exc.status != 404:
+            raise
+
+    return {
+        "status": "success",
+        "app_name": builder.app_name,
+        "namespace": namespace,
+        "message": "Database credentials rotated and pod restarted.",
+    }
+
+
+def deprovision_database(user_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Delete the StatefulSet (+ its pods), Service and Secret. By default the
+    underlying PersistentVolumeClaims are kept so data can be recovered by
+    re-provisioning with the same app_name; pass purge_data=True to delete them.
+    """
+    if not isinstance(user_config, dict):
+        raise ValueError("user_config must be a dictionary")
+
+    app_name = str(user_config.get("app_name", "")).lower().strip()
+    namespace = str(user_config.get("namespace", "")).lower().strip()
+    if not app_name or not namespace:
+        raise ValueError("Both 'app_name' and 'namespace' are required.")
+
+    purge_data = bool(user_config.get("purge_data", False))
+    _require_kube_client()
+
+    core_api = client.CoreV1Api(k3s_client)
+    apps_api = client.AppsV1Api(k3s_client)
+
+    statefulset_name = f"{app_name}-database"
+    service_name = f"{app_name}-database-service"
+    secret_name = f"{app_name}-database-secret"
+
+    try:
+        apps_api.delete_namespaced_stateful_set(
+            name=statefulset_name, namespace=namespace,
+        )
+        print(f"  [DB] Deleted StatefulSet '{statefulset_name}'.")
+    except client.exceptions.ApiException as exc:
+        if exc.status != 404:
+            raise
+    try:
+        core_api.delete_namespaced_service(name=service_name, namespace=namespace)
+        print(f"  [DB] Deleted Service '{service_name}'.")
+    except client.exceptions.ApiException as exc:
+        if exc.status != 404:
+            raise
+    try:
+        core_api.delete_namespaced_secret(name=secret_name, namespace=namespace)
+        print(f"  [DB] Deleted Secret '{secret_name}'.")
+    except client.exceptions.ApiException as exc:
+        if exc.status != 404:
+            raise
+
+    deleted_claims: List[str] = []
+    if purge_data:
+        claims = core_api.list_namespaced_persistent_volume_claim(
+            namespace, label_selector=f"app={app_name},managed-by=paas-backend"
+        )
+        for claim in claims.items:
+            name = claim.metadata.name
+            core_api.delete_namespaced_persistent_volume_claim(name=name, namespace=namespace)
+            deleted_claims.append(name)
+            print(f"  [DB] Deleted PersistentVolumeClaim '{name}' (purge).")
+
+    return {
+        "status": "success",
+        "app_name": app_name,
+        "namespace": namespace,
+        "purge_data": purge_data,
+        "deleted_claims": deleted_claims,
+        "message": f"Database '{app_name}' deprovisioned.",
+    }
+
+
+def check_database_status(name: str, namespace: str) -> Dict[str, Any]:
+    """Report StatefulSet + pod readiness for a per-user database."""
+    if not name or not namespace:
+        raise ValueError("Both 'name' and 'namespace' are required.")
+
+    if k3s_client is None:
+        return {
+            "status": "Unknown",
+            "summary": "The database status could not be checked.",
+            "reason": "Kubernetes client is not initialized.",
+            "details": {},
+        }
+
+    statefulset_name = f"{name}-database"
+    try:
+        apps_api = client.AppsV1Api(k3s_client)
+        core_api = client.CoreV1Api(k3s_client)
+
+        stateful = apps_api.read_namespaced_stateful_set(
+            name=statefulset_name, namespace=namespace
+        )
+        status = stateful.status
+        details = {
+            "statefulset": statefulset_name,
+            "replicas": getattr(status, "replicas", 0) or 0 if status else 0,
+            "ready_replicas": getattr(status, "ready_replicas", 0) or 0 if status else 0,
+        }
+
+        pods = core_api.list_namespaced_pod(
+            namespace, label_selector=f"app={name}"
+        )
+        pod_states = []
+        for pod in pods.items:
+            container = pod.status.container_statuses[0] if pod.status.container_statuses else None
+            pod_states.append({
+                "name": pod.metadata.name,
+                "phase": pod.status.phase,
+                "ready": bool(container and container.ready),
+                "restart_count": int(container.restart_count) if container else 0,
+            })
+        details["pods"] = pod_states
+
+        if details["ready_replicas"] >= 1:
+            return {
+                "status": "Running",
+                "summary": f"Database '{statefulset_name}' is ready.",
+                "reason": "The stateful pod is Running and its readiness probe succeeds.",
+                "details": details,
+            }
+        if any(p["phase"] == "Failed" or p["phase"] == "CrashLoopBackOff"
+               for p in pod_states):
+            reason = f"Pod '{statefulset_name}-0' is not healthy."
+            return {
+                "status": "Failed",
+                "summary": f"Database '{statefulset_name}' failed to become ready.",
+                "reason": reason,
+                "details": details,
+            }
+        return {
+            "status": "Pending",
+            "summary": f"Database '{statefulset_name}' is starting.",
+            "reason": "The stateful pod exists but is not ready yet.",
+            "details": details,
+        }
+    except client.exceptions.ApiException as exc:
+        if exc.status == 404:
+            return {
+                "status": "Unknown",
+                "summary": f"Database '{statefulset_name}' was not found.",
+                "reason": f"Kubernetes returned HTTP 404 in namespace '{namespace}'.",
+                "details": {"statefulset": statefulset_name, "http_status": exc.status},
+            }
+        return {
+            "status": "Unknown",
+            "summary": f"Unable to read database '{statefulset_name}'.",
+            "reason": str(exc),
+            "details": {"statefulset": statefulset_name, "http_status": exc.status},
+        }
 
 
 if __name__ == "__main__":
