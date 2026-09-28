@@ -8,6 +8,7 @@ import Navbar from "@/components/Navbar";
 import StatusBadge from "@/components/StatusBadge";
 import DeploymentHistory from "@/components/DeploymentHistory";
 import SecurityScanPanel from "@/components/SecurityScanPanel";
+import DatabasePanel from "@/components/DatabasePanel";
 import {
   getProject,
   getDeployment,
@@ -426,6 +427,9 @@ export default function ProjectDetailPage() {
                 )}
               </div>
             )}
+
+            {/* Managed databases */}
+            <DatabasePanel projectId={projectId} />
 
             {/* Deployment history */}
             <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-6">

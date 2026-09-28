@@ -6,7 +6,6 @@ import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import Navbar from "@/components/Navbar";
 import ProjectCard from "@/components/ProjectCard";
-import DatabasePanel from "@/components/DatabasePanel";
 import { getUserProjects, Project } from "@/lib/api";
 
 function SkeletonCard() {
@@ -108,11 +107,6 @@ export default function DashboardPage() {
             ))}
           </div>
         )}
-
-        {/* Standalone databases */}
-        <div className="mt-10">
-          <DatabasePanel />
-        </div>
       </main>
     </div>
   );

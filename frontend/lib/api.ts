@@ -234,9 +234,9 @@ export async function redeployProject(
   return handleResponse(res);
 }
 
-// ─── Databases (standalone — each DB is its own project) ─────────────────────
+// ─── Databases ────────────────────────────────────────────────────────────────
 
-export type DatabaseEngine = "postgres" | "mongodb" | "mysql" | "redis";
+export type DatabaseEngine = "postgres" | "mongo" | "redis";
 
 export type DatabaseStatus =
   | "creating"
@@ -245,150 +245,107 @@ export type DatabaseStatus =
   | "deprovisioned"
   | "unknown";
 
-export interface StandaloneDatabase {
+export interface ProjectDatabase {
   database_id: string;
-  db_name: string;
   engine: DatabaseEngine;
   status: DatabaseStatus;
   size_gb: number;
-  storage_class: string;
-  host?: string | null;
-  port?: number | null;
   node_port?: number | null;
-  external: boolean;
   connection_url?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
   deprovisioned_at?: string | null;
 }
 
-export interface DatabaseDetail extends StandaloneDatabase {
-  namespace: string;
-  username?: string | null;
-}
-
-export interface DatabaseProvisionInput {
-  engine: DatabaseEngine;
-  db_name: string;
-  username?: string;
-  password?: string;
-  size_gb?: number;
-  host?: string;
-  port?: number;
-  storage_class?: string;
-  external?: boolean;
-  node_port?: number;
-}
-
 export interface DatabaseProvisionResult {
   database_id: string;
-  db_name: string;
   engine: DatabaseEngine;
   size_gb: number;
   status: DatabaseStatus;
-  host: string;
-  port: number;
   connection_internal: string;
   connection_external?: string | null;
   message: string;
 }
 
-export interface DatabaseEngineInfo {
-  port: number;
-  default_port: number;
-  credential_keys: string[];
-  url_scheme: string;
-}
-
-export interface DatabaseEnginesResponse {
-  engines: Partial<Record<DatabaseEngine, DatabaseEngineInfo>>;
-  default_storage_class: string;
-  external_host: string;
-  allowed_sizes_gb: number[];
-}
-
-export interface DatabaseLogs {
-  database_name: string;
-  namespace: string;
-  logs: {
-    pod_name: string;
-    containers: {
-      container: string;
-      logs?: string | null;
-      error?: string;
-      http_status?: number;
-    }[];
-  }[];
-}
-
 export const DATABASE_ENGINES: {
   value: DatabaseEngine;
   label: string;
+  description: string;
+  defaultSize: number;
 }[] = [
-  { value: "postgres", label: "PostgreSQL" },
-  { value: "mongodb", label: "MongoDB" },
-  { value: "mysql", label: "MySQL" },
-  { value: "redis", label: "Redis" },
+  {
+    value: "postgres",
+    label: "PostgreSQL",
+    description: "Relational SQL database (16-alpine)",
+    defaultSize: 1,
+  },
+  {
+    value: "mongo",
+    label: "MongoDB",
+    description: "Document database (7.0)",
+    defaultSize: 1,
+  },
+  {
+    value: "redis",
+    label: "Redis",
+    description: "In-memory cache (no persistent volume)",
+    defaultSize: 1,
+  },
 ];
 
-export async function getDatabaseEngines(): Promise<DatabaseEnginesResponse> {
-  const res = await apiFetch(`${BASE_URL}/api/v1/databases/engines`);
-  return handleResponse(res);
-}
-
-export async function listDatabases(): Promise<StandaloneDatabase[]> {
-  const res = await apiFetch(`${BASE_URL}/api/v1/databases`);
-  const data = await handleResponse<{ databases: StandaloneDatabase[] }>(res);
+export async function listProjectDatabases(
+  project_id: string
+): Promise<ProjectDatabase[]> {
+  const res = await apiFetch(
+    `${BASE_URL}/api/v1/projects/${project_id}/databases`
+  );
+  const data = await handleResponse<{ databases: ProjectDatabase[] }>(res);
   return data.databases;
 }
 
 export async function provisionDatabase(
-  data: DatabaseProvisionInput
+  project_id: string,
+  data: { engine: DatabaseEngine; size_gb?: number; overwrite?: boolean }
 ): Promise<DatabaseProvisionResult> {
-  const res = await apiFetch(`${BASE_URL}/api/v1/databases`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  return handleResponse(res);
-}
-
-export async function getDatabase(
-  database_id: string
-): Promise<DatabaseDetail> {
-  const res = await apiFetch(`${BASE_URL}/api/v1/databases/${database_id}`);
+  const res = await apiFetch(
+    `${BASE_URL}/api/v1/projects/${project_id}/databases`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }
+  );
   return handleResponse(res);
 }
 
 export async function deleteDatabase(
+  project_id: string,
   database_id: string
 ): Promise<{ message: string; database_id: string }> {
-  const res = await apiFetch(`${BASE_URL}/api/v1/databases/${database_id}`, {
-    method: "DELETE",
-  });
+  const res = await apiFetch(
+    `${BASE_URL}/api/v1/projects/${project_id}/databases/${database_id}`,
+    { method: "DELETE" }
+  );
   return handleResponse(res);
 }
 
 export async function rotateDatabase(
+  project_id: string,
   database_id: string
 ): Promise<DatabaseProvisionResult> {
   const res = await apiFetch(
-    `${BASE_URL}/api/v1/databases/${database_id}/rotate`,
+    `${BASE_URL}/api/v1/projects/${project_id}/databases/${database_id}/rotate`,
     { method: "POST" }
   );
   return handleResponse(res);
 }
 
 export async function refreshDatabaseStatus(
+  project_id: string,
   database_id: string
 ): Promise<{ database_id: string; status: DatabaseStatus }> {
-  const res = await apiFetch(`${BASE_URL}/api/v1/databases/${database_id}/status`);
-  return handleResponse(res);
-}
-
-export async function getDatabaseLogs(
-  database_id: string
-): Promise<DatabaseLogs> {
-  const res = await apiFetch(`${BASE_URL}/api/v1/databases/${database_id}/logs`);
+  const res = await apiFetch(
+    `${BASE_URL}/api/v1/projects/${project_id}/databases/${database_id}/status`
+  );
   return handleResponse(res);
 }
