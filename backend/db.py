@@ -60,13 +60,6 @@ def tunnels_col() -> Collection:
     """
     return get_db()["tunnels"]
 
-def security_events_col() -> Collection:
-    """
-    One document per security incident, notified by the Deployer after
-    handling a Falco alert.
-    """
-    return get_db()["security_events"]
-
 def github_installations_col() -> Collection:
     return get_db()["github_installations"]
 
@@ -78,6 +71,31 @@ def github_oauth_states_col() -> Collection:
 
 def github_webhook_deliveries_col() -> Collection:
     return get_db()["github_webhook_deliveries"]
+
+def user_databases_col() -> Collection:
+    """
+    One document per per-user provisioned database.
+    Document structure:
+    {
+        "database_id":         "db-a1b2c3d4",
+        "project_id":          "proj-x1y2z3",
+        "user_id":             "2105085",
+        "engine":              "postgres",               # postgres | mongodb | redis
+        "status":              "ready",                  # creating | ready | failed | deprovisioned
+        "size_gb":             1,
+        "idem_key":            "proj-x1y2z3:postgres",   # unique idempotency key
+        "app_name":            "proj-x1y2z3-postgres",   # k8s resource name base
+        "namespace":           "db-proj-x1y2z3",
+        "credentials":         {"user": "...", "password": "...", "database": "appdb"},
+        "connection_internal": "postgresql://u:p@svc.ns.svc.cluster.local:5432/appdb",
+        "connection_external": "postgresql://u:p@192.168.68.121:31234/appdb",
+        "node_port":           31234,                    # None when ClusterIP only
+        "created_at":          ISODate(...),
+        "updated_at":          ISODate(...),
+        "deprovisioned_at":    ISODate(...) | None
+    }
+    """
+    return get_db()["user_databases"]
 
 
 def init_indexes():
@@ -115,9 +133,6 @@ def init_indexes():
     github_webhook_deliveries_col().create_index(
         "expires_at", expireAfterSeconds=0
     )
-    security_events_col().create_index("alert_uuid", unique=True)
-    security_events_col().create_index([("k8s_namespace", ASCENDING),
-                                        ("received_at", DESCENDING)])
     projects_col().create_index(
         [
             ("github_installation_id", ASCENDING),
@@ -125,6 +140,19 @@ def init_indexes():
             ("deploy_branch", ASCENDING),
         ]
     )
+
+    user_databases_col().create_index("database_id", unique=True)
+    user_databases_col().create_index(
+        "idem_key",
+        unique=True,
+        partialFilterExpression={"idem_key": {"$type": "string"}},
+    )
+    user_databases_col().create_index("project_id")
+    user_databases_col().create_index("user_id")
+    user_databases_col().create_index(
+        [("project_id", ASCENDING), ("engine", ASCENDING)]
+    )
+    user_databases_col().create_index([("created_at", DESCENDING)])
 
     print("MongoDB indexes initialized.")
 

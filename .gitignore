@@ -8,6 +8,7 @@ database/*
 github-app-private-key*
 __pycache__/
 .pytest_cache/
+.vscode/
 
 
 # Local secret files for cluster bootstrapping
@@ -17,3 +18,5 @@ service-config/.env
 service-config/*.local.sh
 service-config/*.local.yaml
 service-config/*.secret.yaml
+
+my_markdown.md

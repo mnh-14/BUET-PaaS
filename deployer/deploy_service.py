@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 from flask import Flask, jsonify
 
 from routes.build import build_routes
@@ -17,7 +18,3 @@ app.register_blueprint(security_routes)
 @app.route("/health", methods=["GET"])
 def health_check():
     return jsonify({"status": "ok"})
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)

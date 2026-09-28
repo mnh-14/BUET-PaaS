@@ -578,3 +578,190 @@ Get deployment logs:
 ```bash
 curl "http://localhost:5000/api/deploy/logs?name=calculator&namespace=random-user-a"
 ```
+
+---
+
+# Standalone Database endpoints
+
+The deployer exposes 6 database endpoints:
+
+1. GET  /api/database/engines
+2. POST /api/database/provision
+3. POST /api/database/rotate
+4. POST /api/database/deprovision
+5. POST /api/database/status
+6. GET  /api/database/logs
+
+Each database is its own standalone project: it lives in its own namespace
+(`db-<name>`) as a StatefulSet and is **never** nested under an application
+project. Supported engines are advertised by `GET /api/database/engines`
+(**PostgreSQL 16, MongoDB 7.0.14, MySQL 8.4, Redis 7**). The user's host/port/storage-class
+choices are applied literally to the manifests and the returned URLs.
+
+## 1) List supported engines
+
+Endpoint:
+- GET /api/database/engines
+
+Response:
+
+```json
+{
+  "status": "success",
+  "engines": {
+    "postgres": { "image": "postgres:16-alpine", "port": 5432, "credential_keys": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"] },
+    "mongodb":  { "image": "mongo:7.0.14", "port": 27017, "credential_keys": ["MONGO_INITDB_ROOT_USERNAME", "MONGO_INITDB_ROOT_PASSWORD"] },
+    "mysql":    { "image": "mysql:8.4", "port": 3306, "credential_keys": ["MYSQL_ROOT_PASSWORD", "MYSQL_DATABASE", "MYSQL_USER", "MYSQL_PASSWORD"] },
+    "redis":    { "image": "redis:7-alpine", "port": 6379, "credential_keys": ["REDIS_PASSWORD"] }
+  }
+}
+```
+
+## 2) Provision a database
+
+Endpoint:
+- POST /api/database/provision
+
+Purpose:
+- Creates a Namespace (if missing), a credentials Secret, a Service and a
+  StatefulSet with a `volumeClaimTemplate` so data survives pod restarts.
+- Idempotent: partial or repeated submissions skip resources that already exist.
+- The optional `port` override is applied literally to the container + service
+  port; an optional `node_port` pins the NodePort when `external: true`.
+
+Request body (`database_config` wrapper or flat fields):
+
+```json
+{
+  "database_config": {
+    "app_name": "analytics",
+    "namespace": "db-analytics",
+    "engine": "postgres",
+    "port": 5432,
+    "size": "1Gi",
+    "storage_class": "local-path",
+    "external": true,
+    "credentials": {
+      "POSTGRES_USER": "analytics",
+      "POSTGRES_PASSWORD": "s3cret",
+      "POSTGRES_DB": "analytics"
+    }
+  }
+}
+```
+
+Success response:
+
+```json
+{
+  "status": "success",
+  "message": "Database 'analytics' provisioning submitted.",
+  "app_name": "analytics",
+  "namespace": "db-analytics",
+  "engine": "postgres",
+  "node_port": 31234
+}
+```
+
+`node_port` is only returned when `external: true`. It is the NodePort used by
+Docker-runtime (non-cluster) apps to reach the database on each worker node.
+
+## 3) Rotate a database's credentials
+
+Endpoint:
+- POST /api/database/rotate
+
+Purpose:
+- Replaces the credentials Secret with new values and restarts the single
+  stateful pod so the engine picks up the new credentials. Data is preserved.
+
+Request body: same shape as provision, `credentials` must contain the new values.
+
+## 4) Deprovision a database
+
+Endpoint:
+- POST /api/database/deprovision
+
+Purpose:
+- Deletes the StatefulSet, Service and Secret. PersistentVolumeClaims are kept
+  by default (`purge_data: false`) so data can be recovered by re-provisioning
+  with the same `app_name`. Set `purge_data: true` to delete the volumes.
+
+Request body:
+
+```json
+{
+  "app_name": "analytics",
+  "namespace": "db-analytics",
+  "purge_data": false
+}
+```
+
+## 5) Check database status
+
+Endpoint:
+- POST /api/database/status
+
+Request body:
+
+```json
+{
+  "name": "analytics",
+  "namespace": "db-analytics"
+}
+```
+
+Response:
+
+```json
+{
+  "status": "success",
+  "name": "analytics",
+  "namespace": "db-analytics",
+  "result": "Running",
+  "summary": "Database 'analytics-database' is ready.",
+  "reason": "The stateful pod is Running and its readiness probe succeeds.",
+  "details": {
+    "statefulset": "analytics-database",
+    "replicas": 1,
+    "ready_replicas": 1,
+    "pods": [{ "name": "analytics-database-0", "phase": "Running", "ready": true, "restart_count": 0 }]
+  }
+}
+```
+
+Possible result values:
+- Pending
+- Running
+- Failed
+- Unknown
+
+## 6) Get database logs
+
+Endpoint:
+- GET /api/database/logs?name=analytics&namespace=db-analytics
+
+Response:
+
+```json
+{
+  "status": "success",
+  "database_name": "analytics-database",
+  "namespace": "db-analytics",
+  "logs": [
+    {
+      "pod_name": "analytics-database-0",
+      "containers": [{ "container": "database", "logs": "2026-01-01 ... ready to accept connections" }]
+    }
+  ]
+}
+```
+
+### Name resolution
+
+For `app_name = analytics` in `namespace = db-analytics`:
+
+- In-cluster host: `analytics-database-service.db-analytics.svc.cluster.local`
+- External host: `<worker-ip>:<node_port>` (returned by provision)
+- Connection URLs are constructed by the backend (see
+  `backend/services/database_service.py`), which URL-encodes credentials.
