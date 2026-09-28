@@ -97,7 +97,11 @@ class GitHubAppSettings:
 
 @dataclass(frozen=True)
 class DatabaseProvisionSettings:
-    """Configuration for per-user databases provisioned on the deployer cluster."""
+    """Configuration for standalone databases provisioned on the deployer cluster.
+
+    Each database is an independent project: it owns its own Kubernetes
+    namespace and is never nested under (or removed with) an app project.
+    """
 
     enabled: bool
     deployer_url: str
@@ -106,8 +110,7 @@ class DatabaseProvisionSettings:
     allowed_engines: tuple
     allowed_sizes: tuple
     max_per_user: int
-    max_per_project: int
-    storage_class: str
+    default_storage_class: str
     external_host: str
     cost_credits: int
 
@@ -116,7 +119,7 @@ class DatabaseProvisionSettings:
         engines = tuple(
             item.strip()
             for item in os.getenv(
-                "DATABASE_ALLOWED_ENGINES", "postgres,mongodb,redis"
+                "DATABASE_ALLOWED_ENGINES", "postgres,mongodb,mysql,redis"
             ).split(",")
             if item.strip()
         )
@@ -128,7 +131,6 @@ class DatabaseProvisionSettings:
             if item.strip()
         )
         max_per_user = _env_int_or("DATABASE_MAX_PER_USER", 2)
-        max_per_project = _env_int_or("DATABASE_MAX_PER_PROJECT", 1)
         default_size = _env_int_or("DATABASE_DEFAULT_SIZE_GB", 1)
         cost_credits = _env_int_or("DATABASE_COST_CREDITS", 0)
 
@@ -140,8 +142,7 @@ class DatabaseProvisionSettings:
             allowed_engines=engines,
             allowed_sizes=sizes,
             max_per_user=max_per_user,
-            max_per_project=max_per_project,
-            storage_class=os.getenv("DATABASE_STORAGE_CLASS", "local-path").strip() or "local-path",
+            default_storage_class=os.getenv("DATABASE_STORAGE_CLASS", "local-path").strip() or "local-path",
             external_host=os.getenv("DATABASE_EXTERNAL_HOST", "192.168.68.121").strip(),
             cost_credits=cost_credits,
         )

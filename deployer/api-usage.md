@@ -13,12 +13,155 @@ Deployment service used by the integration test:
 They are also the current deployment of deployment-service
 The integration test can override this URL with the `DEPLOYER_URL` environment variable.
 
-The deployer exposes 4 main API endpoints:
+The deployer exposes 6 main API endpoints:
 
 1. POST /api/build
 2. POST /api/deploy
 3. POST /api/build/status
 4. POST /api/deploy/status
+5. GET /api/build/logs
+6. GET /api/deploy/logs
+
+---
+
+## User configuration contract
+
+The build and deploy endpoints accept the application configuration in either a
+`user_config` object or as top-level request fields. The following table is the
+complete configuration surface currently supported by the deployer.
+
+### Core fields
+
+| Field | Type | Used by | Necessity | Description |
+| --- | --- | --- | --- | --- |
+| `app_name` | string | Build and deploy | mandatory | Unique application name. |
+| `namespace` | string | Build and deploy | mandatory | Target Kubernetes namespace. |
+| `git_url` | string | Build | mandatory | Git repository URL to clone. It is not needed by `/api/deploy`. |
+| `image` | string | Build and deploy | never | Do not provide this field. The deployer generates `<app_name>-<namespace>-build:latest` and overwrites any supplied value. |
+
+### Build fields
+
+| Field | Type | Default | Necessity | Description |
+| --- | --- | --- | --- | --- |
+| `git_branch` | string | `main` | optional | Git branch to clone. |
+| `dockerfile_path` | string | `Dockerfile` | optional | Dockerfile path relative to the repository root. |
+| `build_args` | object of string values | `{}` | optional | Docker build arguments passed to Kaniko, for example `{"APP_ENV": "production"}`. Keep values token-safe; the current builder wrapper does not support spaces or shell-special characters in values. |
+
+### Deployment fields
+
+| Field | Type | Default | Necessity | Description |
+| --- | --- | --- | --- | --- |
+| `container_port` | integer | `80` | optional | Port exposed by the application container. |
+| `replicas` | integer | `2` | optional | Desired number of application replicas. |
+| `worker_ip` | string | empty | optional | Accepted for compatibility, but the current manifest builder does not use it to generate a domain because its fallback logic is disabled. |
+| `domain_override` | string | empty | optional | Custom domain. When provided, it is added to the generated ingress domains. |
+| `instance_tier` | string | empty | optional | Node selector value, such as `high-memory`. |
+| `health_path` | string | `/` | optional | HTTP path used by liveness and readiness probes. |
+| `grace_period_seconds` | integer | `30` | optional | Kubernetes pod termination grace period. |
+| `cpu_request` | string | `100m` | optional | Reserved CPU for the application container. |
+| `cpu_limit` | string | `250m` | optional | Maximum CPU for the application container. |
+| `memory_request` | string | `128Mi` | optional | Reserved memory for the application container. |
+| `memory_limit` | string | `256Mi` | optional | Maximum memory for the application container. |
+| `env_vars` | object | `{}` | optional | Environment variables injected into the application and migration containers. Values are converted to strings. |
+| `run_as_non_root` | boolean | `false` | optional | When true, configures the pod to run as UID/GID `10001`. |
+| `read_only_rootfs` | boolean | `false` | optional | Makes the application container root filesystem read-only. |
+| `pre_deploy_cmd` | string | empty | optional | Shell command run in an init container before the application starts. |
+
+### Optional add-ons
+
+| Field | Type | Necessity | Description |
+| --- | --- | --- | --- |
+| `persistent_storage` | object | optional | Enables a persistent volume claim. Supported keys are `size` (default `10Gi`) and `mount_path` (default `/app/data`). |
+| `persistent_storage.size` | string | optional | Requested storage capacity, such as `20Gi`. |
+| `persistent_storage.mount_path` | string | optional | Path where the volume is mounted in the application container. |
+| `enable_ssl` | boolean | optional | Enables TLS-related ingress configuration when set to `true`. |
+| `autoscaling` | object | optional | Enables an HPA when `enabled` is `true`. Supported keys are `min_replicas` (default `2`), `max_replicas` (default `10`), and `target_cpu_percent` (default `80`). |
+| `autoscaling.enabled` | boolean | optional | Turns horizontal pod autoscaling on or off. |
+| `autoscaling.min_replicas` | integer | optional | Minimum HPA replica count. |
+| `autoscaling.max_replicas` | integer | optional | Maximum HPA replica count. |
+| `autoscaling.target_cpu_percent` | integer | optional | Target average CPU utilization percentage. |
+| `cron_jobs` | array | optional | Creates scheduled background jobs. Each item supports `name`, `schedule`, and `command`. |
+
+### Fields callers should not provide
+
+The following values are deployer internals and are not part of the API
+payload contract:
+
+| Field | Necessity | Reason |
+| --- | --- | --- |
+| `target_builder_image` | never | Internal builder configuration. |
+| `default_worker` | never | Internal worker configuration. |
+| `builder_namespace` | never | Internal Kubernetes namespace used for build jobs. |
+| `default_floating_ip` | never | Internal URL generation setting. |
+| `k3s_client` | never | Internal Kubernetes client instance. |
+| Kubernetes client or manifest-builder objects | never | Internal runtime objects, not JSON payload values. |
+
+The deployer generates the build image name in the form
+`<app_name>-<namespace>-build:latest`. An `image` field may appear in older
+examples, but build and deploy currently derive and overwrite it, so callers
+should not rely on supplying it.
+
+### Complete example
+
+This example includes every caller-configurable field. Optional fields can be
+removed when they are not needed.
+
+```json
+{
+  "user_config": {
+    "app_name": "calculator",
+    "namespace": "random-user-a",
+    "git_url": "https://github.com/mnh-14/calculator-tester.git",
+    "git_branch": "main",
+    "dockerfile_path": "Dockerfile",
+    "build_args": {
+      "APP_ENV": "production",
+      "VERSION": "1.0.0"
+    },
+    "container_port": 8080,
+    "replicas": 2,
+    "worker_ip": "192.168.10.101",
+    "domain_override": "app.example.com",
+    "instance_tier": "standard",
+    "health_path": "/healthz",
+    "grace_period_seconds": 30,
+    "cpu_request": "100m",
+    "cpu_limit": "500m",
+    "memory_request": "256Mi",
+    "memory_limit": "512Mi",
+    "env_vars": {
+      "PORT": "8080",
+      "NODE_ENV": "production"
+    },
+    "run_as_non_root": true,
+    "read_only_rootfs": false,
+    "pre_deploy_cmd": "python manage.py migrate",
+    "enable_ssl": true,
+    "persistent_storage": {
+      "size": "20Gi",
+      "mount_path": "/app/storage"
+    },
+    "autoscaling": {
+      "enabled": true,
+      "min_replicas": 2,
+      "max_replicas": 8,
+      "target_cpu_percent": 80
+    },
+    "cron_jobs": [
+      {
+        "name": "daily-backup",
+        "schedule": "0 2 * * *",
+        "command": "python manage.py run_backup"
+      }
+    ]
+  }
+}
+```
+
+The build endpoint needs the Git fields and uses the build-related options.
+The deploy endpoint uses the deployment and add-on fields. Sending the full
+configuration to both endpoints is allowed, but build-only fields are ignored
+by the deployment manifest builder.
 
 ---
 
@@ -45,6 +188,10 @@ Example payload with user_config:
     "git_url": "https://github.com/mnh-14/calculator-tester.git",
     "git_branch": "main",
     "dockerfile_path": "Dockerfile",
+    "build_args": {
+      "APP_ENV": "production",
+      "VERSION": "1.0.0"
+    },
     "container_port": 8080,
     "replicas": 2,
     "cpu_request": "100m",
@@ -54,6 +201,12 @@ Example payload with user_config:
   }
 }
 ```
+
+`build_args` is optional and is passed to Kaniko as Docker build arguments. Its
+value must be an object whose keys are argument names and whose values are
+token-safe strings, for example `{"APP_ENV": "production"}`. Values containing
+spaces or shell-special characters are not supported by the current builder
+wrapper.
 
 Example payload without user_config wrapper:
 
@@ -182,7 +335,48 @@ Possible result values:
 
 ---
 
-## 4) Check deployment status
+## 4) Get build logs
+
+Endpoint:
+- GET /api/build/logs
+
+Purpose:
+- Returns logs from every Pod created for the build Job. Multiple Pods produce multiple entries in the `logs` array.
+
+Query parameters:
+- `name` or `app_name`: application name
+- `namespace`: application namespace; mandatory. Build Pods are read from the builder namespace internally.
+
+Example:
+
+```text
+GET /api/build/logs?name=calculator&namespace=random-user-a
+```
+
+Success response:
+
+```json
+{
+  "status": "success",
+  "name": "calculator",
+  "namespace": "random-user-a",
+  "job_name": "calculator-random-user-a-build-job",
+  "logs": [
+    {
+      "pod_name": "calculator-random-user-a-build-job-abc12",
+      "container": "paas-builder",
+      "logs": "...build output..."
+    }
+  ]
+}
+```
+
+If a Pod exists but its logs cannot be read, that entry contains `logs: null`,
+`error`, and `http_status` instead of build output.
+
+---
+
+## 5) Check deployment status
 
 Endpoint:
 - POST /api/deploy/status
@@ -241,6 +435,48 @@ Possible result values:
 
 ---
 
+## 6) Get deployment logs
+
+Endpoint:
+- GET /api/deploy/logs
+
+Purpose:
+- Returns logs from every Pod selected by the deployment's `app=<name>` label. Multiple Pods and multiple containers are represented in the response.
+
+Query parameters:
+- `name` or `app_name`: application name
+- `namespace`: Kubernetes namespace; mandatory
+
+Example:
+
+```text
+GET /api/deploy/logs?name=calculator&namespace=random-user-a
+```
+
+Success response:
+
+```json
+{
+  "status": "success",
+  "name": "calculator",
+  "namespace": "random-user-a",
+  "deployment_name": "calculator-deployment",
+  "logs": [
+    {
+      "pod_name": "calculator-deployment-abc12",
+      "containers": [
+        {
+          "container": "calculator",
+          "logs": "...application output..."
+        }
+      ]
+    }
+  ]
+}
+```
+
+---
+
 ## Notes on request structure
 
 The deployer is designed to accept either:
@@ -270,11 +506,7 @@ For the status endpoints, the body should include either:
 and optionally:
 - namespace
 
-If namespace is missing, the default is:
-
-```json
-"namespace": "default"
-```
+`namespace` is mandatory for all build, deploy, status, and log requests.
 
 ---
 
@@ -335,21 +567,36 @@ curl -X POST http://localhost:5000/api/deploy/status \
   }'
 ```
 
+Get build logs:
+
+```bash
+curl "http://localhost:5000/api/build/logs?name=calculator&namespace=random-user-a"
+```
+
+Get deployment logs:
+
+```bash
+curl "http://localhost:5000/api/deploy/logs?name=calculator&namespace=random-user-a"
+```
+
 ---
 
-# Per-User Database endpoints
+# Standalone Database endpoints
 
-The deployer exposes 5 database endpoints:
+The deployer exposes 6 database endpoints:
 
-1. GET /api/database/engines
+1. GET  /api/database/engines
 2. POST /api/database/provision
 3. POST /api/database/rotate
 4. POST /api/database/deprovision
 5. POST /api/database/status
+6. GET  /api/database/logs
 
-These endpoints manage per-user, per-project databases running inside the k3s
-cluster as StatefulSets. Supported engines are advertised by
-`GET /api/database/engines` (PostgreSQL 16, MongoDB 7.0.14, Redis 7).
+Each database is its own standalone project: it lives in its own namespace
+(`db-<name>`) as a StatefulSet and is **never** nested under an application
+project. Supported engines are advertised by `GET /api/database/engines`
+(**PostgreSQL 16, MongoDB 7.0.14, MySQL 8.4, Redis 7**). The user's host/port/storage-class
+choices are applied literally to the manifests and the returned URLs.
 
 ## 1) List supported engines
 
@@ -364,6 +611,7 @@ Response:
   "engines": {
     "postgres": { "image": "postgres:16-alpine", "port": 5432, "credential_keys": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"] },
     "mongodb":  { "image": "mongo:7.0.14", "port": 27017, "credential_keys": ["MONGO_INITDB_ROOT_USERNAME", "MONGO_INITDB_ROOT_PASSWORD"] },
+    "mysql":    { "image": "mysql:8.4", "port": 3306, "credential_keys": ["MYSQL_ROOT_PASSWORD", "MYSQL_DATABASE", "MYSQL_USER", "MYSQL_PASSWORD"] },
     "redis":    { "image": "redis:7-alpine", "port": 6379, "credential_keys": ["REDIS_PASSWORD"] }
   }
 }
@@ -378,22 +626,25 @@ Purpose:
 - Creates a Namespace (if missing), a credentials Secret, a Service and a
   StatefulSet with a `volumeClaimTemplate` so data survives pod restarts.
 - Idempotent: partial or repeated submissions skip resources that already exist.
+- The optional `port` override is applied literally to the container + service
+  port; an optional `node_port` pins the NodePort when `external: true`.
 
 Request body (`database_config` wrapper or flat fields):
 
 ```json
 {
   "database_config": {
-    "app_name": "proj-a1b2c3d4-postgres",
-    "namespace": "db-proj-a1b2c3d4",
+    "app_name": "analytics",
+    "namespace": "db-analytics",
     "engine": "postgres",
+    "port": 5432,
     "size": "1Gi",
     "storage_class": "local-path",
     "external": true,
     "credentials": {
-      "POSTGRES_USER": "appuser",
+      "POSTGRES_USER": "analytics",
       "POSTGRES_PASSWORD": "s3cret",
-      "POSTGRES_DB": "appdb"
+      "POSTGRES_DB": "analytics"
     }
   }
 }
@@ -404,9 +655,9 @@ Success response:
 ```json
 {
   "status": "success",
-  "message": "Database 'proj-a1b2c3d4-postgres' provisioning submitted.",
-  "app_name": "proj-a1b2c3d4-postgres",
-  "namespace": "db-proj-a1b2c3d4",
+  "message": "Database 'analytics' provisioning submitted.",
+  "app_name": "analytics",
+  "namespace": "db-analytics",
   "engine": "postgres",
   "node_port": 31234
 }
@@ -440,8 +691,8 @@ Request body:
 
 ```json
 {
-  "app_name": "proj-a1b2c3d4-postgres",
-  "namespace": "db-proj-a1b2c3d4",
+  "app_name": "analytics",
+  "namespace": "db-analytics",
   "purge_data": false
 }
 ```
@@ -455,8 +706,8 @@ Request body:
 
 ```json
 {
-  "name": "proj-a1b2c3d4-postgres",
-  "namespace": "db-proj-a1b2c3d4"
+  "name": "analytics",
+  "namespace": "db-analytics"
 }
 ```
 
@@ -465,16 +716,16 @@ Response:
 ```json
 {
   "status": "success",
-  "name": "proj-a1b2c3d4-postgres",
-  "namespace": "db-proj-a1b2c3d4",
+  "name": "analytics",
+  "namespace": "db-analytics",
   "result": "Running",
-  "summary": "Database 'proj-a1b2c3d4-postgres-database' is ready.",
+  "summary": "Database 'analytics-database' is ready.",
   "reason": "The stateful pod is Running and its readiness probe succeeds.",
   "details": {
-    "statefulset": "proj-a1b2c3d4-postgres-database",
+    "statefulset": "analytics-database",
     "replicas": 1,
     "ready_replicas": 1,
-    "pods": [{ "name": "proj-a1b2c3d4-postgres-database-0", "phase": "Running", "ready": true, "restart_count": 0 }]
+    "pods": [{ "name": "analytics-database-0", "phase": "Running", "ready": true, "restart_count": 0 }]
   }
 }
 ```
@@ -485,11 +736,32 @@ Possible result values:
 - Failed
 - Unknown
 
+## 6) Get database logs
+
+Endpoint:
+- GET /api/database/logs?name=analytics&namespace=db-analytics
+
+Response:
+
+```json
+{
+  "status": "success",
+  "database_name": "analytics-database",
+  "namespace": "db-analytics",
+  "logs": [
+    {
+      "pod_name": "analytics-database-0",
+      "containers": [{ "container": "database", "logs": "2026-01-01 ... ready to accept connections" }]
+    }
+  ]
+}
+```
+
 ### Name resolution
 
-For `app_name = proj-a1b2c3d4-postgres` in `namespace = db-proj-a1b2c3d4`:
+For `app_name = analytics` in `namespace = db-analytics`:
 
-- In-cluster host: `proj-a1b2c3d4-postgres-database-service.db-proj-a1b2c3d4.svc.cluster.local`
+- In-cluster host: `analytics-database-service.db-analytics.svc.cluster.local`
 - External host: `<worker-ip>:<node_port>` (returned by provision)
 - Connection URLs are constructed by the backend (see
   `backend/services/database_service.py`), which URL-encodes credentials.
