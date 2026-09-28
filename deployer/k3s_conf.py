@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 DEFAULT_BUILDER_NAMESPACE = "buet-paas-system-team23"
 DEPLOY_PRIORITY = "deployment-rank"
 BUILD_PRIORITY = "builder-rank"
+DATA_PRIORITY = "data-rank"
 load_dotenv()
 BUILDER_IMAGE = os.getenv("BUILDER_IMAGE_SOURCE", "192.168.67.192:80/paas-system/paas-builder:v1.2")
 TTL_AFTER_FINISHED = 600  # seconds
@@ -503,4 +504,239 @@ class JobPipelineBuilder:
                     }
                 }
             }
+        }
+
+
+DATABASE_ENGINES: Dict[str, Dict[str, Any]] = {
+    "postgres": {
+        "image": "postgres:16-alpine",
+        "port": 5432,
+        "credentials": ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"),
+        "mount_path": "/var/lib/postgresql/data",
+        "probe": ["/bin/sh", "-c", 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'],
+        "cpu_request": "100m",
+        "memory_request": "256Mi",
+        "cpu_limit": "500m",
+        "memory_limit": "1Gi",
+    },
+    "mongodb": {
+        "image": "mongo:7.0.14",
+        "port": 27017,
+        "credentials": ("MONGO_INITDB_ROOT_USERNAME", "MONGO_INITDB_ROOT_PASSWORD"),
+        "mount_path": "/data/db",
+        "probe": [
+            "/bin/sh",
+            "-c",
+            'mongosh --quiet --eval "db.adminCommand({ping:1}).ok" -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD"',
+        ],
+        "cpu_request": "100m",
+        "memory_request": "256Mi",
+        "cpu_limit": "500m",
+        "memory_limit": "1Gi",
+    },
+    "mysql": {
+        "image": "mysql:8.4",
+        "port": 3306,
+        "credentials": ("MYSQL_ROOT_PASSWORD", "MYSQL_DATABASE", "MYSQL_USER", "MYSQL_PASSWORD"),
+        "mount_path": "/var/lib/mysql",
+        "probe": [
+            "/bin/sh",
+            "-c",
+            'mysqladmin ping -h 127.0.0.1 -u root -p"$MYSQL_ROOT_PASSWORD" --silent',
+        ],
+        "cpu_request": "100m",
+        "memory_request": "256Mi",
+        "cpu_limit": "500m",
+        "memory_limit": "1Gi",
+    },
+    "redis": {
+        "image": "redis:7-alpine",
+        "port": 6379,
+        "credentials": ("REDIS_PASSWORD",),
+        "mount_path": "/data",
+        "probe": ["/bin/sh", "-c", 'redis-cli -a "$REDIS_PASSWORD" ping'],
+        "cpu_request": "100m",
+        "memory_request": "256Mi",
+        "cpu_limit": "500m",
+        "memory_limit": "1Gi",
+    },
+}
+
+
+class DatabaseManifestBuilder:
+    """Build a standalone managed database workload for the platform."""
+
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.app_name = str(config["app_name"]).lower().strip()
+        self.namespace = str(config["namespace"]).lower().strip()
+        self.engine = str(config["engine"]).lower().strip()
+
+        if self.engine not in DATABASE_ENGINES:
+            raise ValueError(
+                f"Unsupported database engine '{self.engine}'. "
+                f"Supported engines: {', '.join(DATABASE_ENGINES)}"
+            )
+
+        spec = DATABASE_ENGINES[self.engine]
+        self.image = spec["image"]
+        self.port = int(config.get("port") or spec["port"])
+        if not 1 <= self.port <= 65535:
+            raise ValueError(f"Invalid database port '{self.port}'.")
+
+        node_port = config.get("node_port")
+        self.node_port = int(node_port) if node_port is not None else None
+        if self.node_port is not None and not 1 <= self.node_port <= 65535:
+            raise ValueError(f"Invalid node port '{self.node_port}'.")
+
+        self.required_creds = tuple(spec["credentials"])
+        self.credentials = dict(config.get("credentials") or {})
+        missing = [key for key in self.required_creds if not self.credentials.get(key)]
+        if missing:
+            raise ValueError(
+                f"Database engine '{self.engine}' requires credentials: {', '.join(missing)}"
+            )
+
+        self.size = str(config.get("size", "1Gi"))
+        self.storage_class = config.get("storage_class") or "local-path"
+        self.external = bool(config.get("external", False))
+
+    def build_secret(self) -> Dict[str, Any]:
+        return {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": f"{self.app_name}-database-secret",
+                "namespace": self.namespace,
+                "labels": {"app": self.app_name, "managed-by": "paas-backend"},
+            },
+            "type": "Opaque",
+            "stringData": {key: str(value) for key, value in self.credentials.items()},
+        }
+
+    def build_service(self) -> Dict[str, Any]:
+        service = {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": f"{self.app_name}-database-service",
+                "namespace": self.namespace,
+                "labels": {"app": self.app_name, "managed-by": "paas-backend"},
+            },
+            "spec": {
+                "type": "NodePort" if self.external else "ClusterIP",
+                "selector": {"app": self.app_name},
+                "ports": [{
+                    "name": "db",
+                    "protocol": "TCP",
+                    "port": self.port,
+                    "targetPort": self.port,
+                }],
+            },
+        }
+        if self.external and self.node_port is not None:
+            service["spec"]["ports"][0]["nodePort"] = self.node_port
+        return service
+
+    def build_statefulset(self) -> Dict[str, Any]:
+        spec = DATABASE_ENGINES[self.engine]
+        env_list = [{
+            "name": key,
+            "valueFrom": {"secretKeyRef": {"name": f"{self.app_name}-database-secret", "key": key}},
+        } for key in self.required_creds]
+
+        container: Dict[str, Any] = {
+            "name": "database",
+            "image": self.image,
+            "imagePullPolicy": "IfNotPresent",
+            "env": env_list,
+            "ports": [{"name": "db", "containerPort": self.port}],
+            "resources": {
+                "requests": {
+                    "cpu": spec.get("cpu_request", "100m"),
+                    "memory": spec.get("memory_request", "256Mi"),
+                },
+                "limits": {
+                    "cpu": spec.get("cpu_limit", "500m"),
+                    "memory": spec.get("memory_limit", "1Gi"),
+                },
+            },
+        }
+
+        if "probe" in spec:
+            container["readinessProbe"] = {
+                "exec": {"command": spec["probe"]},
+                "initialDelaySeconds": 10,
+                "periodSeconds": 10,
+                "timeoutSeconds": 5,
+                "failureThreshold": 10,
+            }
+            container["livenessProbe"] = {
+                "exec": {"command": spec["probe"]},
+                "initialDelaySeconds": 30,
+                "periodSeconds": 15,
+                "timeoutSeconds": 5,
+                "failureThreshold": 6,
+            }
+
+        pod_spec: Dict[str, Any] = {
+            "priorityClassName": DATA_PRIORITY,
+            "terminationGracePeriodSeconds": 30,
+            "securityContext": {"seccompProfile": {"type": "RuntimeDefault"}},
+            "containers": [container],
+        }
+
+        if spec.get("mount_path"):
+            pod_spec["volumeMounts"] = [{
+                "name": "data",
+                "mountPath": spec["mount_path"],
+                "subPath": self.app_name,
+            }]
+
+        statefulset = {
+            "apiVersion": "apps/v1",
+            "kind": "StatefulSet",
+            "metadata": {
+                "name": f"{self.app_name}-database",
+                "namespace": self.namespace,
+                "labels": {"app": self.app_name, "managed-by": "paas-backend"},
+            },
+            "spec": {
+                "serviceName": f"{self.app_name}-database-service",
+                "replicas": 1,
+                "selector": {"matchLabels": {"app": self.app_name}},
+                "template": {
+                    "metadata": {"labels": {"app": self.app_name}},
+                    "spec": pod_spec,
+                },
+            },
+        }
+
+        if spec.get("mount_path"):
+            statefulset["spec"]["volumeClaimTemplates"] = [{
+                "metadata": {
+                    "name": "data",
+                    "labels": {"app": self.app_name, "managed-by": "paas-backend"},
+                },
+                "spec": {
+                    "accessModes": ["ReadWriteOnce"],
+                    "storageClassName": self.storage_class,
+                    "resources": {"requests": {"storage": self.size}},
+                },
+            }]
+
+        return statefulset
+
+    def build_all(self) -> Dict[str, Any]:
+        return {
+            "secret": self.build_secret(),
+            "service": self.build_service(),
+            "statefulset": self.build_statefulset(),
+        }
+
+    def build_all_listed(self) -> Dict[str, Any]:
+        return {
+            "apiVersion": "v1",
+            "kind": "List",
+            "items": list(self.build_all().values()),
         }
