@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 from flask import Flask, jsonify
 
 from routes.build import build_routes
@@ -13,6 +12,7 @@ app.register_blueprint(database_routes)
 app.register_blueprint(deployment_routes)
 app.register_blueprint(namespace_routes)
 app.register_blueprint(security_routes)
+
 
 
 @app.route("/health", methods=["GET"])
