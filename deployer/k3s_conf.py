@@ -407,10 +407,17 @@ class JobPipelineBuilder:
         self.priority_class_name = BUILD_PRIORITY
         self.ttl_after_finished = TTL_AFTER_FINISHED
 
-    def apply_git_cloner(self, git_url: str, branch: str = "main") -> "JobPipelineBuilder":
+    def apply_git_cloner(
+        self,
+        git_url: str,
+        branch: str = "main",
+        git_token: Optional[str] = None,
+    ) -> "JobPipelineBuilder":
         self._script_list.append("/usr/local/bin/clone-git.sh")
         self._env_vars["GIT_URL"] = git_url
         self._env_vars["GIT_BRANCH"] = branch
+        if git_token:
+            self._env_vars["GIT_TOKEN"] = git_token
         return self
 
     def apply_trivy_scan(self, severity: str = "CRITICAL,HIGH", fail_on_cve: bool = True) -> "JobPipelineBuilder":

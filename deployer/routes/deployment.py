@@ -2,6 +2,7 @@ from flask import Blueprint, jsonify, request
 
 from deploy_utils import (
     check_deploy_status,
+    delete_entire_deployment,
     deploy_application,
     extract_required_namespace,
     extract_user_config,
@@ -24,6 +25,24 @@ def api_deploy():
             "namespace": user_config.get("namespace", "default"),
             "manifest": result,
         }), 202
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
+
+
+@deployment_routes.route("/api/deploy", methods=["DELETE"])
+def api_delete_deploy():
+    try:
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            raise ValueError("Request JSON must be an object.")
+
+        namespace = extract_required_namespace(payload)
+        project_name = payload.get("project_name") or payload.get("app_name") or payload.get("name")
+        if not project_name:
+            raise ValueError("'project_name' is required.")
+
+        result = delete_entire_deployment(namespace=namespace, project_name=project_name)
+        return jsonify(result), 200
     except Exception as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
 

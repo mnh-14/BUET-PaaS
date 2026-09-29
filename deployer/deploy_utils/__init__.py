@@ -3,6 +3,7 @@
 from .build import build_image, check_build_status, get_build_logs
 from .deployment import (
     check_deploy_status,
+    delete_entire_deployment,
     deploy_application,
     get_deploy_logs,
     redeploy_application,
@@ -16,6 +17,7 @@ __all__ = [
     "check_build_status",
     "get_build_logs",
     "check_deploy_status",
+    "delete_entire_deployment",
     "deploy_application",
     "get_deploy_logs",
     "redeploy_application",

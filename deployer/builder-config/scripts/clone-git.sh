@@ -1,5 +1,12 @@
 #!/bin/bash
 set -e
-echo "📥 [TASK 1] Cloning Git Repository: ${GIT_URL} (Branch: ${GIT_BRANCH:-main})..."
-git clone --depth 1 -b "${GIT_BRANCH:-main}" "${GIT_URL}" /workspace
-echo "✓ Git clone complete."
+
+echo "Cloning Git repository (Branch: ${GIT_BRANCH:-main})..."
+
+clone_url="${GIT_URL}"
+if [[ -n "${GIT_TOKEN:-}" ]]; then
+	clone_url="https://x-access-token:${GIT_TOKEN}@${GIT_URL#https://}"
+fi
+
+git clone --depth 1 --branch "${GIT_BRANCH:-main}" "${clone_url}" /workspace
+echo "Git clone complete."
