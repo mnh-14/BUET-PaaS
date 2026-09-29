@@ -1,0 +1,11 @@
+Kubernetes API: https://192.168.128.101:6443
+kubectl context: default
+kubectl client: v1.33.13
+kustomize: v5.6.0
+k3s server: v1.36.2+k3s1
+Helm: v3.22.0
+
+WARNING
+
+The kubectl client/server difference is three minor versions. Kubectl warns that this exceeds the supported +/-1 minor-version skew. No kubectl upgrade was attempted.
+

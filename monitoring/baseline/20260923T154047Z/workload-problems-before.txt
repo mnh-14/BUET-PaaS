@@ -1,0 +1,13 @@
+COMMAND: kubectl get pods -A --no-headers, filtered for states other than Running/Completed
+
+NAMESPACE                 NAME                                                          READY   STATUS               RESTARTS
+2105062                   to-do-backend-deployment-6b849bbf9d-xnt9s                   0/1     CrashLoopBackOff     35
+buet-paas-system-team23   to-do-frontend-v-infinity-2105062-build-job-z8vpq           0/1     Error                0
+
+COMMAND: kubectl get deployments -A --no-headers, filtered for zero ready replicas
+
+NAMESPACE   NAME                       READY   UP-TO-DATE   AVAILABLE
+2105062     to-do-backend-deployment   0/1     1            0
+
+The failed build Pod belongs to a Job that later completed using another Pod. The unavailable student backend is an active pre-existing fault and must remain distinguishable from monitoring regressions.
+

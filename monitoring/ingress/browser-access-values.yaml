@@ -1,0 +1,85 @@
+# Step 12B browser-access overlay for kube-prometheus-stack 91.4.1.
+#
+# Apply after:
+#   1. monitoring/prometheus/values.yaml
+#   2. monitoring/external-vms/scrape-values.yaml
+#
+# This file contains no credentials or certificate material. The referenced
+# Secrets must be created separately in Step 12C before this overlay is applied.
+
+grafana:
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/router.middlewares: monitoring-monitoring-grafana-chain@kubernetescrd
+      traefik.ingress.kubernetes.io/router.tls: "true"
+    hosts:
+      - grafana.monitoring.192.168.64.121.sslip.io
+    path: /
+    pathType: Prefix
+    tls:
+      - secretName: monitoring-public-tls
+        hosts:
+          - grafana.monitoring.192.168.64.121.sslip.io
+  grafana.ini:
+    server:
+      domain: grafana.monitoring.192.168.64.121.sslip.io
+      root_url: https://grafana.monitoring.192.168.64.121.sslip.io/
+      enforce_domain: true
+    users:
+      allow_sign_up: false
+      auto_assign_org_role: Viewer
+    auth.anonymous:
+      enabled: false
+    security:
+      cookie_secure: true
+      cookie_samesite: strict
+      disable_gravatar: true
+    analytics:
+      reporting_enabled: false
+      check_for_updates: false
+      check_for_plugin_updates: false
+
+prometheus:
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/router.middlewares: monitoring-monitoring-prometheus-chain@kubernetescrd
+      traefik.ingress.kubernetes.io/router.tls: "true"
+    hosts:
+      - prometheus.monitoring.192.168.64.121.sslip.io
+    paths:
+      - /
+    pathType: Prefix
+    tls:
+      - secretName: monitoring-public-tls
+        hosts:
+          - prometheus.monitoring.192.168.64.121.sslip.io
+  prometheusSpec:
+    externalUrl: https://prometheus.monitoring.192.168.64.121.sslip.io
+    routePrefix: /
+
+alertmanager:
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/router.middlewares: monitoring-monitoring-alertmanager-chain@kubernetescrd
+      traefik.ingress.kubernetes.io/router.tls: "true"
+    hosts:
+      - alerts.monitoring.192.168.64.121.sslip.io
+    paths:
+      - /
+    pathType: Prefix
+    tls:
+      - secretName: monitoring-public-tls
+        hosts:
+          - alerts.monitoring.192.168.64.121.sslip.io
+  alertmanagerSpec:
+    externalUrl: https://alerts.monitoring.192.168.64.121.sslip.io
+    routePrefix: /

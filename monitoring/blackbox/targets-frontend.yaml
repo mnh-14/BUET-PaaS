@@ -1,0 +1,20 @@
+serviceMonitor:
+  targets:
+    - name: buet-paas-frontend
+      url: http://192.168.128.15/
+      module: http_frontend
+      additionalMetricsRelabels:
+        service: frontend
+        environment: buet-paas
+        deployment_type: blackbox
+      additionalRelabeling:
+        - targetLabel: instance
+          replacement: http://192.168.128.15/
+        - targetLabel: target
+          replacement: buet-paas-frontend
+        - targetLabel: service
+          replacement: frontend
+        - targetLabel: environment
+          replacement: buet-paas
+        - targetLabel: deployment_type
+          replacement: blackbox

@@ -1,0 +1,92 @@
+serviceMonitor:
+  targets:
+    - name: buet-paas-frontend
+      url: http://192.168.128.15/
+      module: http_frontend
+      additionalMetricsRelabels:
+        service: frontend
+        environment: buet-paas
+        deployment_type: blackbox
+      additionalRelabeling:
+        - targetLabel: instance
+          replacement: http://192.168.128.15/
+        - targetLabel: target
+          replacement: buet-paas-frontend
+        - targetLabel: service
+          replacement: frontend
+        - targetLabel: environment
+          replacement: buet-paas
+        - targetLabel: deployment_type
+          replacement: blackbox
+    - name: buet-paas-backend
+      url: http://192.168.128.131:8020/health
+      module: http_json_ok
+      additionalMetricsRelabels:
+        service: backend
+        environment: buet-paas
+        deployment_type: blackbox
+      additionalRelabeling:
+        - targetLabel: instance
+          replacement: http://192.168.128.131:8020/health
+        - targetLabel: target
+          replacement: buet-paas-backend
+        - targetLabel: service
+          replacement: backend
+        - targetLabel: environment
+          replacement: buet-paas
+        - targetLabel: deployment_type
+          replacement: blackbox
+    - name: paas-deployer
+      url: http://paas-deployer.buet-paas-system-team23.svc.cluster.local/health
+      module: http_json_ok
+      additionalMetricsRelabels:
+        service: deployer
+        environment: buet-paas
+        deployment_type: blackbox
+      additionalRelabeling:
+        - targetLabel: instance
+          replacement: http://paas-deployer.buet-paas-system-team23.svc.cluster.local/health
+        - targetLabel: target
+          replacement: paas-deployer
+        - targetLabel: service
+          replacement: deployer
+        - targetLabel: environment
+          replacement: buet-paas
+        - targetLabel: deployment_type
+          replacement: blackbox
+    - name: harbor
+      url: https://192.168.128.152/api/v2.0/health
+      module: http_harbor_tls
+      additionalMetricsRelabels:
+        service: registry
+        environment: buet-paas
+        deployment_type: blackbox
+      additionalRelabeling:
+        - targetLabel: instance
+          replacement: https://192.168.128.152/api/v2.0/health
+        - targetLabel: target
+          replacement: harbor
+        - targetLabel: service
+          replacement: registry
+        - targetLabel: environment
+          replacement: buet-paas
+        - targetLabel: deployment_type
+          replacement: blackbox
+    - name: sonarqube
+      url: http://192.168.128.33:9000/api/system/status
+      module: http_sonarqube_up
+      additionalMetricsRelabels:
+        service: code-quality
+        environment: buet-paas
+        deployment_type: blackbox
+      additionalRelabeling:
+        - targetLabel: instance
+          replacement: http://192.168.128.33:9000/api/system/status
+        - targetLabel: target
+          replacement: sonarqube
+        - targetLabel: service
+          replacement: code-quality
+        - targetLabel: environment
+          replacement: buet-paas
+        - targetLabel: deployment_type
+          replacement: blackbox

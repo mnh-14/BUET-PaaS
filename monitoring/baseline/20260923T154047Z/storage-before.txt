@@ -1,0 +1,17 @@
+COMMAND: kubectl get pvc -A
+
+NAMESPACE   NAME                                                               STATUS   CAPACITY   ACCESS MODES   STORAGECLASS
+falco       falco-falcosidekick-ui-redis-data-falco-falcosidekick-ui-redis-0   Bound    1Gi        RWO            local-path
+
+COMMAND: kubectl get storageclass
+
+NAME                   PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION
+local-path (default)   rancher.io/local-path   Delete          WaitForFirstConsumer   false
+
+NOTES
+
+- There is one default local-path StorageClass.
+- Volumes are node-local and use reclaim policy Delete.
+- Volume expansion is disabled.
+- Prometheus persistence is not approved or enabled at this stage.
+

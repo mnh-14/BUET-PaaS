@@ -1,0 +1,13 @@
+COMMANDS: kubectl get <resource> -A --no-headers | wc -l
+
+namespaces=16
+pods=48
+deployments=25
+statefulsets=1
+daemonsets=2
+services=26
+jobs=4
+pvcs=1
+storageclasses=1
+ingresses=18
+

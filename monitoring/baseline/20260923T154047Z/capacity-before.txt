@@ -1,0 +1,24 @@
+COMMAND: kubectl top nodes
+
+NAME             CPU(cores)   CPU(%)   MEMORY(bytes)   MEMORY(%)
+k3s-control-01   103m         2%       1723Mi          21%
+k3s-worker-01    93m          2%       2802Mi          35%
+k3s-worker-02    99m          2%       1054Mi          13%
+k3s-worker-03    89m          2%       959Mi           12%
+
+SANITIZED CAPACITY/ALLOCATION SUMMARY FROM kubectl describe node
+
+NAME             CAPACITY/ALLOCATABLE       REQUESTED CPU   REQUESTED MEMORY   CPU LIMITS   MEMORY LIMITS
+k3s-control-01   4 CPU / 8126800Ki memory   1350m (33%)     2502Mi (31%)       4750m (118%) 4864Mi (61%)
+k3s-worker-01    4 CPU / 8126804Ki memory   500m (12%)      1152Mi (14%)       2250m (56%)  2304Mi (29%)
+k3s-worker-02    4 CPU / 8126804Ki memory   600m (15%)      1222Mi (15%)       2250m (56%)  2474Mi (31%)
+k3s-worker-03    4 CPU / 8126800Ki memory   550m (13%)      1Gi (12%)          2250m (56%)  2304Mi (29%)
+
+NOTES
+
+- Aggregate nominal capacity is 16 CPU and approximately 31 GiB memory.
+- Current measured CPU usage is low.
+- The control-plane CPU limit total is overcommitted, but requested CPU is 33% and actual CPU was 2%.
+- No node reported memory, disk, or PID pressure.
+- Initial monitoring values must still use conservative requests and limits.
+

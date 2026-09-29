@@ -1,0 +1,17 @@
+COMMAND: helm version --short
+
+v3.22.0+g144ca65
+
+COMMAND: helm list -A
+
+NAME          NAMESPACE     STATUS     CHART
+falco         falco         deployed   falco-9.2.0
+traefik       kube-system   deployed   traefik-40.1.3+up40.1.0
+traefik-crd   kube-system   deployed   traefik-crd-40.1.3+up40.1.0
+
+COLLISION CHECKS
+
+monitoring namespace: not found
+monitoring-related Helm release: none
+Prometheus Operator CRDs: none
+

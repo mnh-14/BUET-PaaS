@@ -1,0 +1,56 @@
+# Additional Prometheus scrape targets for BUET-PaaS standalone VMs.
+#
+# Apply this file as an overlay after monitoring/prometheus/values.yaml.
+# It contains no credentials.
+
+prometheus:
+  prometheusSpec:
+    additionalScrapeConfigs:
+      - job_name: standalone-node-exporters
+        scheme: http
+        metrics_path: /metrics
+        scrape_interval: 30s
+        scrape_timeout: 10s
+        static_configs:
+          - targets:
+              - "192.168.128.15:9100"
+            labels:
+              instance: frontend-vm
+              service: frontend
+              environment: buet-paas
+              deployment_type: standalone-vm
+          - targets:
+              - "192.168.128.92:9100"
+            labels:
+              instance: database-vm
+              service: database
+              environment: buet-paas
+              deployment_type: standalone-vm
+          - targets:
+              - "192.168.128.152:9100"
+            labels:
+              instance: registry-vm-2
+              service: registry
+              environment: buet-paas
+              deployment_type: standalone-vm
+          - targets:
+              - "192.168.128.151:9100"
+            labels:
+              instance: k3s-user
+              service: platform-admin
+              environment: buet-paas
+              deployment_type: standalone-vm
+          - targets:
+              - "192.168.128.131:9100"
+            labels:
+              instance: backend-vm
+              service: backend
+              environment: buet-paas
+              deployment_type: standalone-vm
+          - targets:
+              - "192.168.128.33:9100"
+            labels:
+              instance: sonarqube
+              service: code-quality
+              environment: buet-paas
+              deployment_type: standalone-vm

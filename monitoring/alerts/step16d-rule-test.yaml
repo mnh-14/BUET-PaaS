@@ -1,0 +1,101 @@
+rule_files:
+  - prometheus-rules.yaml
+evaluation_interval: 30s
+tests:
+  - name: service probe pending firing resolved
+    interval: 30s
+    input_series:
+      - series: 'probe_success{deployment_type="blackbox",service="frontend",target="buet-paas-frontend"}'
+        values: '1 1 1 0+0x11 1+0x3'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: BUETPaaSServiceProbeFailed
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: BUETPaaSServiceProbeFailed
+        exp_alerts:
+          - exp_labels:
+              deployment_type: blackbox
+              service: frontend
+              target: buet-paas-frontend
+              severity: critical
+              team: buet-paas-operators
+            exp_annotations:
+              summary: BUET-PaaS frontend service probe failed
+              description: Blackbox probe for buet-paas-frontend has failed for 5 minutes. Check the service endpoint and Blackbox target before acting.
+      - eval_time: 8m
+        alertname: BUETPaaSServiceProbeFailed
+        exp_alerts: []
+  - name: missing fleet targets after hold
+    interval: 30s
+    input_series:
+      - series: 'probe_success{deployment_type="blackbox",service="frontend",target="buet-paas-frontend"}'
+        values: '1+0x23'
+      - series: 'probe_success{deployment_type="blackbox",service="backend",target="buet-paas-backend"}'
+        values: '1+0x23'
+      - series: 'probe_success{deployment_type="blackbox",service="deployer",target="paas-deployer"}'
+        values: '1+0x23'
+      - series: 'probe_success{deployment_type="blackbox",service="registry",target="harbor"}'
+        values: '1+0x23'
+      - series: 'up{job="standalone-node-exporters",instance="frontend-vm"}'
+        values: '1+0x23'
+      - series: 'up{job="standalone-node-exporters",instance="backend-vm"}'
+        values: '1+0x23'
+      - series: 'up{job="standalone-node-exporters",instance="database-vm"}'
+        values: '1+0x23'
+      - series: 'up{job="standalone-node-exporters",instance="registry-vm-2"}'
+        values: '1+0x23'
+      - series: 'up{job="standalone-node-exporters",instance="sonarqube"}'
+        values: '1+0x23'
+    alert_rule_test:
+      - eval_time: 9m30s
+        alertname: BUETPaaSServiceProbeTargetMissing
+        exp_alerts: []
+      - eval_time: 10m30s
+        alertname: BUETPaaSServiceProbeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              team: buet-paas-operators
+            exp_annotations:
+              summary: Fewer than five BUET-PaaS service probes are present
+              description: Expected five Blackbox probe series. Check ServiceMonitors, Prometheus target discovery, and Blackbox Exporter.
+      - eval_time: 9m30s
+        alertname: BUETPaaSStandaloneVMTargetMissing
+        exp_alerts: []
+      - eval_time: 10m30s
+        alertname: BUETPaaSStandaloneVMTargetMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              team: buet-paas-operators
+            exp_annotations:
+              summary: Fewer than six standalone VM exporter targets are present
+              description: Expected six VM node_exporter targets. Check the additional scrape configuration and Prometheus target discovery.
+  - name: writable VM root disk low
+    interval: 30s
+    input_series:
+      - series: 'node_filesystem_avail_bytes{job="standalone-node-exporters",instance="backend-vm",service="backend",mountpoint="/",fstype="ext4"}'
+        values: '10+0x35'
+      - series: 'node_filesystem_size_bytes{job="standalone-node-exporters",instance="backend-vm",service="backend",mountpoint="/",fstype="ext4"}'
+        values: '100+0x35'
+      - series: 'node_filesystem_readonly{job="standalone-node-exporters",instance="backend-vm",service="backend",mountpoint="/",fstype="ext4"}'
+        values: '0+0x35'
+    alert_rule_test:
+      - eval_time: 14m30s
+        alertname: BUETPaaSStandaloneVMRootDiskLow
+        exp_alerts: []
+      - eval_time: 15m30s
+        alertname: BUETPaaSStandaloneVMRootDiskLow
+        exp_alerts:
+          - exp_labels:
+              job: standalone-node-exporters
+              instance: backend-vm
+              service: backend
+              mountpoint: /
+              fstype: ext4
+              severity: warning
+              team: buet-paas-operators
+            exp_annotations:
+              summary: Root filesystem low on backend-vm
+              description: Less than 15% of the standalone VM root filesystem is available for 15 minutes. Check disk usage and growth before cleanup.

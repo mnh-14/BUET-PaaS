@@ -1,0 +1,43 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: monitoring-http-redirect
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: buet-paas-monitoring
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: monitoring-monitoring-https-redirect@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: grafana.monitoring.192.168.64.121.sslip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: monitoring-stack-grafana
+                port:
+                  number: 80
+    - host: prometheus.monitoring.192.168.64.121.sslip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: monitoring-stack-kube-prom-prometheus
+                port:
+                  number: 9090
+    - host: alerts.monitoring.192.168.64.121.sslip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: monitoring-stack-kube-prom-alertmanager
+                port:
+                  number: 9093

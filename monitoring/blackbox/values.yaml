@@ -1,0 +1,97 @@
+fullnameOverride: blackbox-exporter
+
+replicas: 1
+
+image:
+  registry: quay.io
+  repository: prometheus/blackbox-exporter
+  tag: v0.28.0
+  digest: sha256:e753ff9f3fc458d02cca5eddab5a77e1c175eee484a8925ac7d524f04366c2fc
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 9115
+
+ingress:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 32Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi
+
+extraConfigmapMounts:
+  - name: harbor-ca
+    mountPath: /etc/blackbox/certs
+    configMap: blackbox-harbor-ca
+    readOnly: true
+    defaultMode: 420
+
+config:
+  modules:
+    # Delete the chart's generic default so only reviewed modules are exposed.
+    http_2xx: null
+    http_frontend:
+      prober: http
+      timeout: 5s
+      http:
+        method: GET
+        valid_status_codes: [200]
+        valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+        follow_redirects: false
+        preferred_ip_protocol: ip4
+        fail_if_body_not_matches_regexp:
+          - BUET-PaaS
+    http_json_ok:
+      prober: http
+      timeout: 5s
+      http:
+        method: GET
+        valid_status_codes: [200]
+        valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+        follow_redirects: false
+        preferred_ip_protocol: ip4
+        fail_if_body_not_matches_regexp:
+          - '"status":"ok"'
+    http_harbor_tls:
+      prober: http
+      timeout: 5s
+      http:
+        method: GET
+        valid_status_codes: [200]
+        valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+        follow_redirects: false
+        preferred_ip_protocol: ip4
+        fail_if_body_not_matches_regexp:
+          - '"status":"healthy"'
+        tls_config:
+          ca_file: /etc/blackbox/certs/harbor-ca.crt
+          insecure_skip_verify: false
+    http_sonarqube_up:
+      prober: http
+      timeout: 5s
+      http:
+        method: GET
+        valid_status_codes: [200]
+        valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+        follow_redirects: false
+        preferred_ip_protocol: ip4
+        fail_if_body_not_matches_regexp:
+          - '"status":"UP"'
+
+serviceMonitor:
+  enabled: true
+  defaults:
+    labels:
+      release: monitoring-stack
+    interval: 30s
+    scrapeTimeout: 10s
+    module: http_frontend
+    additionalMetricsRelabels:
+      environment: buet-paas
+      deployment_type: blackbox
+  targets: []

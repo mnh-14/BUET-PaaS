@@ -1,0 +1,155 @@
+# BUET-PaaS kube-prometheus-stack overrides.
+# Chart: kube-prometheus-stack 91.4.1
+# Target cluster: Kubernetes v1.36.2+k3s1
+# This file contains no credentials.
+
+kubeTargetVersionOverride: "1.36.2"
+
+crds:
+  enabled: true
+  upgradeJob:
+    enabled: false
+
+defaultRules:
+  create: true
+  rules:
+    etcd: false
+    kubeControllerManager: false
+    kubeProxy: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+
+# k3s embeds these components in the k3s process. The cluster has no normal
+# Services/EndpointSlices for their individual metrics endpoints, and its
+# authenticated API metrics endpoint already exposes unified k3s metrics.
+kubeControllerManager:
+  enabled: false
+
+kubeScheduler:
+  enabled: false
+
+kubeEtcd:
+  enabled: false
+
+kubeProxy:
+  enabled: false
+
+kubeApiServer:
+  enabled: true
+
+kubelet:
+  enabled: true
+
+coreDns:
+  enabled: true
+
+kubeDns:
+  enabled: false
+
+alertmanager:
+  enabled: true
+  ingress:
+    enabled: false
+  service:
+    type: ClusterIP
+  alertmanagerSpec:
+    replicas: 1
+    retention: 48h
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+    # Ephemeral for the initial MVP measurement period.
+    storage: {}
+
+grafana:
+  enabled: true
+  ingress:
+    enabled: false
+  service:
+    type: ClusterIP
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 1
+      memory: 512Mi
+  # Grafana 13 performs lengthy first-run SQLite migrations. Give that initial
+  # startup enough time to finish before the normal liveness probe takes over.
+  startupProbe:
+    httpGet:
+      path: /api/health
+      port: grafana
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 90
+
+kubeStateMetrics:
+  enabled: true
+
+kube-state-metrics:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+nodeExporter:
+  enabled: true
+  operatingSystems:
+    linux:
+      enabled: true
+    aix:
+      enabled: false
+    darwin:
+      enabled: false
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+prometheusOperator:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+prometheus:
+  enabled: true
+  ingress:
+    enabled: false
+  service:
+    type: ClusterIP
+  prometheusSpec:
+    replicas: 1
+    retention: 2d
+    scrapeInterval: 30s
+    evaluationInterval: 30s
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 1500m
+        memory: 2Gi
+    # Ephemeral for the initial MVP measurement period.
+    storageSpec: {}

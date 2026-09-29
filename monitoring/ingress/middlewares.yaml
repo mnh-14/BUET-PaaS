@@ -1,0 +1,135 @@
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: monitoring-security-headers
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: buet-paas-monitoring
+spec:
+  headers:
+    contentTypeNosniff: true
+    customFrameOptionsValue: SAMEORIGIN
+    referrerPolicy: same-origin
+    stsSeconds: 31536000
+    stsIncludeSubdomains: false
+    stsPreload: false
+    customResponseHeaders:
+      Permissions-Policy: "camera=(), microphone=(), geolocation=()"
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: monitoring-https-redirect
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: buet-paas-monitoring
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: monitoring-grafana-rate-limit
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: buet-paas-monitoring
+spec:
+  rateLimit:
+    average: 100
+    burst: 200
+    period: 1s
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: monitoring-prometheus-rate-limit
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: buet-paas-monitoring
+spec:
+  rateLimit:
+    average: 50
+    burst: 100
+    period: 1s
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: monitoring-alertmanager-rate-limit
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: buet-paas-monitoring
+spec:
+  rateLimit:
+    average: 20
+    burst: 40
+    period: 1s
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: monitoring-prometheus-auth
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: buet-paas-monitoring
+spec:
+  basicAuth:
+    secret: monitoring-prometheus-basic-auth
+    realm: BUET-PaaS Prometheus
+    removeHeader: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: monitoring-alertmanager-auth
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: buet-paas-monitoring
+spec:
+  basicAuth:
+    secret: monitoring-alertmanager-basic-auth
+    realm: BUET-PaaS Alertmanager
+    removeHeader: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: monitoring-grafana-chain
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: buet-paas-monitoring
+spec:
+  chain:
+    middlewares:
+      - name: monitoring-security-headers
+      - name: monitoring-grafana-rate-limit
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: monitoring-prometheus-chain
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: buet-paas-monitoring
+spec:
+  chain:
+    middlewares:
+      - name: monitoring-security-headers
+      - name: monitoring-prometheus-rate-limit
+      - name: monitoring-prometheus-auth
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: monitoring-alertmanager-chain
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: buet-paas-monitoring
+spec:
+  chain:
+    middlewares:
+      - name: monitoring-security-headers
+      - name: monitoring-alertmanager-rate-limit
+      - name: monitoring-alertmanager-auth

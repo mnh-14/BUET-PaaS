@@ -1,0 +1,60 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: buet-paas-mvp-alerts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/component: alert-rules
+    app.kubernetes.io/part-of: buet-paas-monitoring
+    release: monitoring-stack
+spec:
+  groups:
+    - name: buet-paas.mvp.availability
+      interval: 30s
+      rules:
+        - alert: BUETPaaSServiceProbeFailed
+          expr: probe_success{deployment_type="blackbox"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            team: buet-paas-operators
+          annotations:
+            summary: "BUET-PaaS {{ $labels.service }} service probe failed"
+            description: "Blackbox probe for {{ $labels.target }} has failed for 5 minutes. Check the service endpoint and Blackbox target before acting."
+        - alert: BUETPaaSServiceProbeTargetMissing
+          expr: count(probe_success{deployment_type="blackbox"}) < 5
+          for: 10m
+          labels:
+            severity: warning
+            team: buet-paas-operators
+          annotations:
+            summary: "Fewer than five BUET-PaaS service probes are present"
+            description: "Expected five Blackbox probe series. Check ServiceMonitors, Prometheus target discovery, and Blackbox Exporter."
+        - alert: BUETPaaSStandaloneVMTargetMissing
+          expr: count(up{job="standalone-node-exporters"}) < 6
+          for: 10m
+          labels:
+            severity: warning
+            team: buet-paas-operators
+          annotations:
+            summary: "Fewer than six standalone VM exporter targets are present"
+            description: "Expected six VM node_exporter targets. Check the additional scrape configuration and Prometheus target discovery."
+    - name: buet-paas.mvp.capacity
+      interval: 30s
+      rules:
+        - alert: BUETPaaSStandaloneVMRootDiskLow
+          expr: |
+            (
+              100 * node_filesystem_avail_bytes{job="standalone-node-exporters",mountpoint="/",fstype!~"tmpfs|overlay"}
+              / node_filesystem_size_bytes{job="standalone-node-exporters",mountpoint="/",fstype!~"tmpfs|overlay"}
+              < 15
+            )
+            and on (instance)
+            (node_filesystem_readonly{job="standalone-node-exporters",mountpoint="/",fstype!~"tmpfs|overlay"} == 0)
+          for: 15m
+          labels:
+            severity: warning
+            team: buet-paas-operators
+          annotations:
+            summary: "Root filesystem low on {{ $labels.instance }}"
+            description: "Less than 15% of the standalone VM root filesystem is available for 15 minutes. Check disk usage and growth before cleanup."

@@ -1,0 +1,12 @@
+COMMAND: kubectl get events -A --field-selector type=Warning --sort-by=.lastTimestamp
+
+NAMESPACE        REASON             OBJECT                                          MESSAGE
+2105062          BackOff            pod/to-do-backend-deployment-6b849bbf9d-xnt9s   Back-off restarting failed container to-do-backend.
+2105062          Unhealthy          pod/to-do-backend-deployment-6b849bbf9d-xnt9s   Readiness probe failed: HTTP probe returned status 404.
+kube-system      DNSConfigForming   pod/coredns-656ff85cd7-zst5f                    Nameserver limit exceeded; some nameservers were omitted.
+metallb-system   DNSConfigForming   pod/speaker-n74nx                               Nameserver limit exceeded; some nameservers were omitted.
+metallb-system   DNSConfigForming   pod/speaker-pqd64                               Nameserver limit exceeded; some nameservers were omitted.
+metallb-system   DNSConfigForming   pod/speaker-m6rht                               Nameserver limit exceeded; some nameservers were omitted.
+metallb-system   DNSConfigForming   pod/speaker-mk74f                               Nameserver limit exceeded; some nameservers were omitted.
+
+These warnings existed before monitoring installation.

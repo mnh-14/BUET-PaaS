@@ -1,0 +1,15 @@
+COMMAND: kubectl get nodes -o wide
+
+NAME             STATUS   ROLES           AGE   VERSION        INTERNAL-IP       OS-IMAGE             CONTAINER-RUNTIME
+k3s-control-01   Ready    control-plane   57d   v1.36.2+k3s1   192.168.128.101   Ubuntu 22.04.5 LTS   containerd://2.3.2-k3s2
+k3s-worker-01    Ready    <none>          25d   v1.36.4+k3s1   192.168.128.121   Ubuntu 22.04.5 LTS   containerd://2.3.4-k3s1.36
+k3s-worker-02    Ready    <none>          57d   v1.36.2+k3s1   192.168.128.122   Ubuntu 22.04.5 LTS   containerd://2.3.2-k3s2
+k3s-worker-03    Ready    <none>          57d   v1.36.2+k3s1   192.168.128.123   Ubuntu 22.04.5 LTS   containerd://2.3.2-k3s2
+
+All nodes reported:
+
+MemoryPressure=False
+DiskPressure=False
+PIDPressure=False
+Ready=True
+
