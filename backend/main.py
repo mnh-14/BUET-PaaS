@@ -1267,7 +1267,7 @@ def get_project(project_id: str, user: dict = Depends(require_user)):
 def delete_project(
     project_id: str, request: Request, user: dict = Depends(require_user)
 ):
-    """Tear down a project's Kubernetes resources and archive it locally."""
+    """Tear down a project's Kubernetes resources and permanently delete it."""
     enforce_same_origin(request)
     project = projects_col().find_one(
         {"project_id": project_id, "user_id": user["user_id"]}
@@ -1285,15 +1285,9 @@ def delete_project(
             detail=f"Could not tear down the Kubernetes resources: {exc}",
         ) from None
 
-    deployments_col().update_many(
-        {"project_id": project_id},
-        {"$set": {"status": "stopped", "public_url": None}}
-    )
-    projects_col().update_one(
-        {"project_id": project_id},
-        {"$set": {"current_status": "stopped"}}
-    )
-    return {"message": f"Project {project_id} stopped."}
+    deployments_col().delete_many({"project_id": project_id})
+    projects_col().delete_one({"project_id": project_id})
+    return {"message": f"Project {project_id} deleted."}
 
 
 @app.get("/api/v1/deployments/{deployment_id}")
