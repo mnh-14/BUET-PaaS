@@ -81,7 +81,13 @@ def build_image(user_config: Dict[str, Any]):
 		raise ValueError("user_config must be a dictionary")
 	_require_kube_client()
 	builder = JobPipelineBuilder(app_name=user_config["app_name"], namespace=user_config["namespace"])
-	builder.apply_git_cloner(git_url=user_config["git_url"], branch=user_config.get("git_branch", "main"))
+	github_auth = user_config.get("github_auth") or {}
+	git_token = github_auth.get("token") if isinstance(github_auth, dict) else None
+	builder.apply_git_cloner(
+		git_url=user_config["git_url"],
+		branch=user_config.get("git_branch", "main"),
+		git_token=git_token,
+	)
 	user_config["image"] = f"{user_config['app_name']}-{user_config['namespace']}-build:latest"
 	builder.apply_kaniko_build(
 		image_destination=user_config["image"],
@@ -148,7 +154,7 @@ def get_build_logs(name: str, namespace: str):
 	for pod in pods:
 		container_name = "paas-builder"
 		try:
-			pod_logs = core_api.read_namespaced_pod_log(name=pod.metadata.name, namespace=builder_namespace, container=container_name)
+			pod_logs = core_api.read_namespaced_pod_log(name=pod.metadata.name, namespace=builder_namespace, container=container_name, tail_lines=250)
 			logs.append({"pod_name": pod.metadata.name, "container": container_name, "logs": pod_logs})
 		except client.exceptions.ApiException as exc:
 			logs.append({"pod_name": pod.metadata.name, "container": container_name, "logs": None, "error": str(exc), "http_status": exc.status})

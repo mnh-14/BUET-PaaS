@@ -20,6 +20,59 @@ def deploy_application(user_config: Dict[str, Any]):
 	return manifest_as_list
 
 
+def delete_entire_deployment(namespace: str, project_name: str) -> Dict[str, Any]:
+	"""Delete all application resources created for a project deployment."""
+	if not namespace or not project_name:
+		raise ValueError("Both 'namespace' and 'project_name' are required.")
+
+	_require_kube_client()
+	core_api = client.CoreV1Api(k3s_client)
+	apps_api = client.AppsV1Api(k3s_client)
+	networking_api = client.NetworkingV1Api(k3s_client)
+	autoscaling_api = client.AutoscalingV2Api(k3s_client)
+
+	resources = [
+		("HorizontalPodAutoscaler", f"{project_name}-hpa", lambda: autoscaling_api.delete_namespaced_horizontal_pod_autoscaler(
+			name=f"{project_name}-hpa", namespace=namespace
+		)),
+		("Ingress", f"{project_name}-ingress", lambda: networking_api.delete_namespaced_ingress(
+			name=f"{project_name}-ingress", namespace=namespace
+		)),
+		("Service", f"{project_name}-service", lambda: core_api.delete_namespaced_service(
+			name=f"{project_name}-service", namespace=namespace
+		)),
+		("Deployment", f"{project_name}-deployment", lambda: apps_api.delete_namespaced_deployment(
+			name=f"{project_name}-deployment",
+			namespace=namespace,
+			propagation_policy="Background",
+		)),
+		("PersistentVolumeClaim", f"{project_name}-pvc", lambda: core_api.delete_namespaced_persistent_volume_claim(
+			name=f"{project_name}-pvc", namespace=namespace
+		)),
+	]
+	deleted = []
+	already_absent = []
+
+	for kind, name, delete_resource in resources:
+		try:
+			delete_resource()
+			deleted.append({"kind": kind, "name": name, "namespace": namespace})
+		except client.exceptions.ApiException as exc:
+			if exc.status == 404:
+				already_absent.append({"kind": kind, "name": name, "namespace": namespace})
+			else:
+				raise
+
+	return {
+		"status": "success",
+		"project_name": project_name,
+		"namespace": namespace,
+		"deleted": deleted,
+		"already_absent": already_absent,
+		"message": f"Deployment resources for '{project_name}' were deleted if they existed.",
+	}
+
+
 def check_deploy_status(name: str, namespace: str):
 	"""Return deployment status together with a human-readable summary and reason."""
 	if not name or not namespace:
@@ -91,7 +144,7 @@ def get_deploy_logs(name: str, namespace: str):
 		pod_logs = []
 		for container_name in container_names:
 			try:
-				container_logs = core_api.read_namespaced_pod_log(name=pod_name, namespace=namespace, container=container_name)
+				container_logs = core_api.read_namespaced_pod_log(name=pod_name, namespace=namespace, container=container_name, tail_lines=250)
 				pod_logs.append({"container": container_name, "logs": container_logs})
 			except client.exceptions.ApiException as exc:
 				pod_logs.append({"container": container_name, "logs": None, "error": str(exc), "http_status": exc.status})

@@ -10,7 +10,7 @@ metadata:
   name: paas-deployer-cluster-role
 rules:
   - apiGroups: [""]
-    resources: ["namespaces", "services", "pods", "configmaps", "secrets"]
+    resources: ["namespaces", "services", "pods", "configmaps", "secrets", "persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["apps"]
     resources: ["deployments", "replicasets"]
@@ -61,7 +61,7 @@ spec:
       serviceAccountName: paas-deployer
       containers:
         - name: paas-deployer
-          image: 192.168.128.152/paas-builders/deploy-service-image:v2.6
+          image: 192.168.128.152/paas-builders/deploy-service-image:v2.8
           imagePullPolicy: Always
           ports:
             - containerPort: 5000
