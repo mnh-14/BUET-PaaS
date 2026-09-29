@@ -520,14 +520,19 @@ def provision_database(user_config: Dict[str, Any]) -> Dict[str, Any]:
                 node_port = int(entry.node_port)
                 break
 
+    connection_details = builder.build_connection_details()
+    connection_details["credentials"] = builder.build_connection_credentials()
+
     return {
         "status": "success",
         "app_name": builder.app_name,
         "namespace": namespace,
         "engine": builder.engine,
+        "connection_string": builder.build_connection_string(),
+        "connection_details": connection_details,
+        **connection_details,
         "node_port": node_port,
         "message": f"Database '{builder.app_name}' provisioning submitted.",
-        "manifest": manifest_list,
     }
 
 

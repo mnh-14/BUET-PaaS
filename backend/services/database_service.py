@@ -135,6 +135,18 @@ def mask_connection_url(url: str) -> str:
     return masked
 
 
+def _connection_details(url: str) -> dict:
+    """Extract shareable host, port, and database name from a connection URL."""
+    if not url:
+        return {"host": None, "port": None, "database_name": None}
+    parts = urlsplit(url)
+    return {
+        "host": parts.hostname,
+        "port": parts.port,
+        "database_name": parts.path.lstrip("/") or None,
+    }
+
+
 def _now():
     return datetime.now(timezone.utc)
 
@@ -466,6 +478,9 @@ class DatabaseService:
                 "size_gb":             doc.get("size_gb"),
                 "node_port":           doc.get("node_port"),
                 "connection_url":      mask_connection_url(url),
+                "host":                _connection_details(url)["host"],
+                "port":                _connection_details(url)["port"],
+                "database_name":       _connection_details(url)["database_name"],
                 "created_at":          doc.get("created_at"),
                 "updated_at":          doc.get("updated_at"),
                 "deprovisioned_at":    doc.get("deprovisioned_at"),
@@ -526,6 +541,8 @@ class DatabaseService:
     # -- response helpers ------------------------------------------------
 
     def _full_response(self, database_id, engine, size_gb, internal_url, external_url, status):
+        internal_details = _connection_details(internal_url)
+        external_details = _connection_details(external_url)
         return {
             "database_id": database_id,
             "engine": engine,
@@ -533,6 +550,14 @@ class DatabaseService:
             "status": status,
             "connection_internal": internal_url,
             "connection_external": external_url,
+            "host_internal": internal_details["host"],
+            "port_internal": internal_details["port"],
+            "host_external": external_details["host"],
+            "port_external": external_details["port"],
+            "database_name": (
+                internal_details["database_name"]
+                or external_details["database_name"]
+            ),
             "message": (
                 "Database provisioned. The full connection URL is shown only once; "
                 "your app can read it from the reserved environment variable."

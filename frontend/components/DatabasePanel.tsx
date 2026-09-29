@@ -43,6 +43,11 @@ export default function DatabasePanel({ projectId }: { projectId: string }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [selectedEngine, setSelectedEngine] = useState<DatabaseEngine>("postgres");
   const [fullUrl, setFullUrl] = useState<string | null>(null);
+  const [connectionDetails, setConnectionDetails] = useState<{
+    host: string | null;
+    port: number | null;
+    databaseName: string | null;
+  } | null>(null);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -64,12 +69,18 @@ export default function DatabasePanel({ projectId }: { projectId: string }) {
   async function handleProvision() {
     setError("");
     setFullUrl(null);
+    setConnectionDetails(null);
     setProvisioning(true);
     try {
       const result = await provisionDatabase(projectId, { engine: selectedEngine });
       setFullUrl(
         result.connection_external || result.connection_internal
       );
+      setConnectionDetails({
+        host: result.host_external || result.host_internal || null,
+        port: result.port_external || result.port_internal || null,
+        databaseName: result.database_name || null,
+      });
       await load();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to provision database");
@@ -94,10 +105,16 @@ export default function DatabasePanel({ projectId }: { projectId: string }) {
   async function handleRotate(database_id: string) {
     setError("");
     setFullUrl(null);
+    setConnectionDetails(null);
     setBusyId(database_id);
     try {
       const result = await rotateDatabase(projectId, database_id);
       setFullUrl(result.connection_external || result.connection_internal);
+      setConnectionDetails({
+        host: result.host_external || result.host_internal || null,
+        port: result.port_external || result.port_internal || null,
+        databaseName: result.database_name || null,
+      });
       await load();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Credential rotation failed");
@@ -145,6 +162,13 @@ export default function DatabasePanel({ projectId }: { projectId: string }) {
           <code className="text-xs text-gray-200 break-all select-all">
             {fullUrl}
           </code>
+          {connectionDetails && (
+            <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] font-mono text-gray-400">
+              <span>Host: {connectionDetails.host || "—"}</span>
+              <span>Port: {connectionDetails.port || "—"}</span>
+              <span>Database: {connectionDetails.databaseName || "—"}</span>
+            </div>
+          )}
         </div>
       )}
 

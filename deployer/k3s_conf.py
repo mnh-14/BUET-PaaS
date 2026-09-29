@@ -2,6 +2,7 @@ import os
 import yaml
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
+from urllib.parse import quote_plus
 
 
 DEFAULT_BUILDER_NAMESPACE = "buet-paas-system-team23"
@@ -581,7 +582,8 @@ class DatabaseManifestBuilder:
 
         spec = DATABASE_ENGINES[self.engine]
         self.image = spec["image"]
-        self.port = int(config.get("port") or spec["port"])
+        configured_port = config.get("port")
+        self.port = int(spec["port"] if configured_port is None else configured_port)
         if not 1 <= self.port <= 65535:
             raise ValueError(f"Invalid database port '{self.port}'.")
 
@@ -601,6 +603,93 @@ class DatabaseManifestBuilder:
         self.size = str(config.get("size", "1Gi"))
         self.storage_class = config.get("storage_class") or "local-path"
         self.external = bool(config.get("external", False))
+
+    def build_connection_string(
+        self,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+    ) -> str:
+        """Build a connection string for this database instance.
+
+        The default host is the in-cluster Service DNS name. An explicit host
+        and port can be supplied when sharing a NodePort connection string.
+        """
+        details = self.build_connection_details(host=host, port=port)
+        connection_host = details["host"]
+        connection_port = details["port"]
+
+        if self.engine == "postgres":
+            username, password, database = (
+                self.credentials["POSTGRES_USER"],
+                self.credentials["POSTGRES_PASSWORD"],
+                self.credentials["POSTGRES_DB"],
+            )
+            return (
+                f"postgresql://{quote_plus(str(username))}:"
+                f"{quote_plus(str(password))}@{connection_host}:"
+                f"{connection_port}/{quote_plus(str(database))}"
+            )
+
+        if self.engine == "mongodb":
+            return (
+                f"mongodb://{quote_plus(str(self.credentials['MONGO_INITDB_ROOT_USERNAME']))}:"
+                f"{quote_plus(str(self.credentials['MONGO_INITDB_ROOT_PASSWORD']))}@"
+                f"{connection_host}:{connection_port}/admin?authSource=admin"
+            )
+
+        if self.engine == "mysql":
+            return (
+                f"mysql://{quote_plus(str(self.credentials['MYSQL_USER']))}:"
+                f"{quote_plus(str(self.credentials['MYSQL_PASSWORD']))}@"
+                f"{connection_host}:{connection_port}/"
+                f"{quote_plus(str(self.credentials['MYSQL_DATABASE']))}"
+            )
+
+        if self.engine == "redis":
+            return (
+                f"redis://:{quote_plus(str(self.credentials['REDIS_PASSWORD']))}@"
+                f"{connection_host}:{connection_port}/0"
+            )
+
+        # __init__ validates the engine, so this is unreachable unless the
+        # registry and this method are changed inconsistently.
+        raise ValueError(f"Unsupported database engine '{self.engine}'.")
+
+    def build_connection_details(
+        self,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return the host, port, and database name for user connection info."""
+        connection_port = int(self.port if port is None else port)
+        if not 1 <= connection_port <= 65535:
+            raise ValueError(f"Invalid connection port '{connection_port}'.")
+
+        connection_host = host or (
+            f"{self.app_name}-database-service."
+            f"{self.namespace}.svc.cluster.local"
+        )
+        if self.engine == "mongodb":
+            database_name = "admin"
+        elif self.engine == "redis":
+            database_name = "0"
+        elif self.engine == "postgres":
+            database_name = str(self.credentials["POSTGRES_DB"])
+        else:
+            database_name = str(self.credentials["MYSQL_DATABASE"])
+
+        return {
+            "host": connection_host,
+            "port": connection_port,
+            "database_name": database_name,
+        }
+
+    def build_connection_credentials(self) -> Dict[str, str]:
+        """Return only the credentials required by the selected database engine."""
+        return {
+            key: str(self.credentials[key])
+            for key in self.required_creds
+        }
 
     def build_secret(self) -> Dict[str, Any]:
         return {

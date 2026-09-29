@@ -20,14 +20,16 @@ def api_provision_database():
     try:
         user_config = extract_user_config(request.get_json(silent=True))
         result = provision_database(user_config)
-        return jsonify({
+        response = jsonify({
             "status": "success",
             "message": "Database resources applied.",
             "app_name": user_config.get("app_name"),
-            "namespace": user_config.get("namespace"),
-            "engine": user_config.get("engine"),
-            "manifest": result,
-        }), 202
+            "connection_details": result.get("connection_details"),
+            "connection_string": result.get("connection_string"),
+        })
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+        response.headers["Pragma"] = "no-cache"
+        return response, 202
     except Exception as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
 

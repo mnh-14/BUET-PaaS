@@ -252,6 +252,9 @@ export interface ProjectDatabase {
   size_gb: number;
   node_port?: number | null;
   connection_url?: string | null;
+  host?: string | null;
+  port?: number | null;
+  database_name?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
   deprovisioned_at?: string | null;
@@ -264,6 +267,11 @@ export interface DatabaseProvisionResult {
   status: DatabaseStatus;
   connection_internal: string;
   connection_external?: string | null;
+  host_internal?: string | null;
+  port_internal?: number | null;
+  host_external?: string | null;
+  port_external?: number | null;
+  database_name?: string | null;
   message: string;
 }
 
