@@ -481,6 +481,7 @@ class JobPipelineBuilder:
                     "spec": {
                         "priorityClassName": self.priority_class_name,
                         "restartPolicy": "Never",
+                        "dnsPolicy": "Default",
                         "containers": [{
                             "name": "paas-builder",
                             "image": self.builder_image,
