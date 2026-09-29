@@ -133,3 +133,28 @@ def test_running_deploy_does_not_require_url_yet():
     )
     service = KubernetesService("http://vm:5000", session=session)
     assert service.get_status(CONFIG, "deploy")["status"] == "running"
+
+
+def test_delete_deployment_sends_namespace_and_app_name():
+    session = Mock()
+    session.request.return_value = response(200, {"status": "success"})
+    service = KubernetesService("http://vm:5000", session=session)
+
+    service.delete_deployment(namespace="2105001", app_name="my-app")
+
+    call = session.request.call_args
+    assert call.args[:2] == ("DELETE", "http://vm:5000/api/deploy")
+    assert call.kwargs["json"] == {"namespace": "2105001", "project_name": "my-app"}
+
+
+def test_delete_deployment_raises_on_rejection():
+    session = Mock()
+    session.request.return_value = response(
+        400, {"status": "error", "message": "Namespace does not exist"}
+    )
+    service = KubernetesService("http://vm:5000", session=session)
+
+    with pytest.raises(KubernetesDeploymentError) as error:
+        service.delete_deployment(namespace="2105001", app_name="my-app")
+
+    assert error.value.reason == "Namespace does not exist"

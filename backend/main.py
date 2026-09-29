@@ -1267,13 +1267,24 @@ def get_project(project_id: str, user: dict = Depends(require_user)):
 def delete_project(
     project_id: str, request: Request, user: dict = Depends(require_user)
 ):
-    """Archive a project locally; the VM API currently has no teardown function."""
+    """Tear down a project's Kubernetes resources and archive it locally."""
     enforce_same_origin(request)
     project = projects_col().find_one(
         {"project_id": project_id, "user_id": user["user_id"]}
     )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
+
+    try:
+        KubernetesService().delete_deployment(
+            namespace=project["namespace"], app_name=project["app_name"]
+        )
+    except KubernetesDeploymentError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Could not tear down the Kubernetes resources: {exc}",
+        ) from None
+
     deployments_col().update_many(
         {"project_id": project_id},
         {"$set": {"status": "stopped", "public_url": None}}

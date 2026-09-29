@@ -256,6 +256,15 @@ class KubernetesService:
         self._require_success(result, "deploy")
         return result
 
+    def delete_deployment(self, namespace: str, app_name: str) -> dict[str, Any]:
+        result = self._request(
+            "DELETE",
+            "/api/deploy",
+            json={"namespace": namespace, "project_name": app_name},
+        )
+        self._require_success(result, "deployment deletion")
+        return result
+
     @staticmethod
     def _require_success(result: dict[str, Any], operation: str) -> None:
         if result.get("status") != "success":
