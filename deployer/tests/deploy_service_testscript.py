@@ -18,7 +18,7 @@ BASE_URL = os.getenv(
 	"DEPLOYER_URL",
 	"http://deployment-service.buet-paas-system-team23.192.168.64.121.sslip.io",
 ).rstrip("/")
-POLL_INTERVAL_SECONDS = float(os.getenv("DEPLOYER_POLL_INTERVAL_SECONDS", "30"))
+POLL_INTERVAL_SECONDS = float(os.getenv("DEPLOYER_POLL_INTERVAL_SECONDS", "3"))
 POLL_TIMEOUT_SECONDS = float(os.getenv("DEPLOYER_POLL_TIMEOUT_SECONDS", "1800"))
 LOG_DIR = Path(__file__).resolve().parent / "log"
 RUN_TIMESTAMP = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
@@ -221,6 +221,8 @@ def _write_pod_diagnostics(api, namespace, label_selector, filename, parent_read
 	try:
 		# Equivalent to: kubectl get deployment,service,ingress,pods -n random-user-a
 		pods = api.list_namespaced_pod(namespace, label_selector=label_selector).items
+		if not pods:
+			_progress(f"No Pods found for selector '{label_selector}'; continuing without Pod diagnostics")
 		apps_api = client.AppsV1Api(api.api_client)
 		networking_api = client.NetworkingV1Api(api.api_client)
 		deployments = apps_api.list_namespaced_deployment(namespace).items
@@ -315,6 +317,14 @@ def _write_pod_diagnostics(api, namespace, label_selector, filename, parent_read
 	_progress(f"Kubernetes diagnostics written to {output_path}")
 
 
+def _try_write_pod_diagnostics(*args, **kwargs):
+	"""Collect diagnostics when possible without failing the test lifecycle."""
+	try:
+		_write_pod_diagnostics(*args, **kwargs)
+	except Exception as exc:
+		_progress(f"Diagnostic collection failed and was ignored: {type(exc).__name__}: {exc}")
+
+
 def _diagnostic_timestamp():
 	return RUN_TIMESTAMP
 
@@ -394,7 +404,7 @@ def test_build_pipeline():
 	api = _load_kube_client()
 	if api is not None:
 		job_name = f"{user_config['app_name']}-{NAMESPACE}-build-job"
-		_write_pod_diagnostics(
+		_try_write_pod_diagnostics(
 			api,
 			BUILD_NAMESPACE,
 			f"app={user_config['app_name']},paas-stage=build-job",
@@ -434,7 +444,7 @@ def test_deploy_pipeline():
 	api = _load_kube_client()
 	if api is not None:
 		deployment_name = f"{user_config['app_name']}-deployment"
-		_write_pod_diagnostics(
+		_try_write_pod_diagnostics(
 			api,
 			NAMESPACE,
 			f"app={user_config['app_name']}",
