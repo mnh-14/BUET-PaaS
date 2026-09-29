@@ -423,6 +423,7 @@ class JobPipelineBuilder:
     def apply_trivy_scan(self, severity: str = "CRITICAL,HIGH", fail_on_cve: bool = True) -> "JobPipelineBuilder":
         self._script_list.append("/usr/local/bin/run-trivy.sh")
         self._env_vars["EXIT_CODE"] = "1" if fail_on_cve else "0"
+        self._env_vars["SEVERITY"] = severity
         return self
 
     def apply_kaniko_build(

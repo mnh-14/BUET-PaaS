@@ -3,7 +3,6 @@
 import time
 from typing import Any, Dict
 
-from deployer.routes import build
 from kubernetes import client, utils
 
 from .config import builder_namespace
