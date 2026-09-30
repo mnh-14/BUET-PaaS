@@ -5,7 +5,7 @@ IMAGE_TO_SCAN="${IMAGE_DESTINATION:?IMAGE_DESTINATION is required}"
 
 echo "Scanning image: ${IMAGE_TO_SCAN}"
 
-trivy image \
+/kaniko/trivy image \
   --scanners vuln,secret \
   --severity "${SEVERITY:-CRITICAL,HIGH}" \
   --exit-code "${EXIT_CODE:-1}" \
