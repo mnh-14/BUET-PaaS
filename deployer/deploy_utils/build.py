@@ -94,7 +94,6 @@ def build_image(user_config: Dict[str, Any]):
 		dockerfile_path=user_config.get("dockerfile_path", "Dockerfile"),
 		build_args=user_config.get("build_args", {}),
 	)
-	builder.apply_trivy_scan()
 	build_conf = builder.build()
 	_delete_finished_job_if_present(build_conf["metadata"]["name"])
 	utils.create_from_dict(k3s_client, build_conf)

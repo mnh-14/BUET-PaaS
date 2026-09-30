@@ -413,7 +413,7 @@ class JobPipelineBuilder:
         branch: str = "main",
         git_token: Optional[str] = None,
     ) -> "JobPipelineBuilder":
-        self._script_list.append("/kaniko/scripts/clone-git.sh")
+        self._script_list.append("/usr/local/bin/clone-git.sh")
         self._env_vars["GIT_URL"] = git_url
         self._env_vars["GIT_BRANCH"] = branch
         if git_token:
@@ -421,7 +421,7 @@ class JobPipelineBuilder:
         return self
 
     def apply_trivy_scan(self, severity: str = "CRITICAL,HIGH", fail_on_cve: bool = True) -> "JobPipelineBuilder":
-        self._script_list.append("/kaniko/scripts/run-trivy.sh")
+        self._script_list.append("/usr/local/bin/run-trivy.sh")
         self._env_vars["EXIT_CODE"] = "1" if fail_on_cve else "0"
         self._env_vars["SEVERITY"] = severity
         return self
@@ -433,7 +433,7 @@ class JobPipelineBuilder:
         insecure: bool = False,
         build_args: Optional[Dict[str, Any]] = None,
     ) -> "JobPipelineBuilder":
-        self._script_list.append("/kaniko/scripts/run-kaniko.sh")
+        self._script_list.append("/usr/local/bin/run-kaniko.sh")
         self._env_vars["IMAGE_DESTINATION"] = DEFAULT_HARBOR_IP+"/buet-paas-student-apps/"+image_destination
         # self._env_vars["IMAGE_DESTINATION"] = f"{DEFAULT_PRIVATE_IP}/buet-paas-student-apps/{self.app_name}-{self.namespace}:{image_tag}"
         self._env_vars["DOCKERFILE_PATH"] = dockerfile_path
